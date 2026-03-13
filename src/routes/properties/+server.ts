@@ -25,8 +25,9 @@ export const GET: RequestHandler = async ({ url }) => {
 	if (semanticQuery) {
 		try {
 			const embedding = await embedForQuery(semanticQuery);
-			const similar = searchSimilarChunks(embedding, 20) as Array<{ document_id: number }>;
-			vectorResults = [...new Set(similar.map((s) => s.document_id))];
+			const similar = searchSimilarChunks(embedding, 20) as Array<{ document_ids: string | null }>;
+			const allDocIds = similar.flatMap((s) => s.document_ids?.split(',').map(Number) ?? []);
+			vectorResults = [...new Set(allDocIds)];
 		} catch {
 			// Vector search not available, continue with structured only
 		}

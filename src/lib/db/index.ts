@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import { createHash } from 'crypto';
 import { readFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
@@ -9,6 +10,160 @@ const DATA_DIR = join(PROJECT_ROOT, 'data');
 const SCHEMA_PATH = join(PROJECT_ROOT, 'src', 'lib', 'db', 'schema.sql');
 
 let _db: Database.Database | null = null;
+
+// ── Content hashing for deduplication ──
+// STABLE API: changing normalization invalidates all stored hashes.
+// Do not modify without re-hashing all chunks.
+
+function normalizeContent(content: string): string {
+	if (!content) return '';
+	return content
+		.replace(/\r\n/g, '\n')
+		.replace(/\t/g, ' ')
+		.replace(/ {2,}/g, ' ')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
+}
+
+function contentHash(content: string): string {
+	return createHash('sha256').update(normalizeContent(content)).digest('hex');
+}
+
+// ── Schema migration: old chunks (with document_id) → deduplicated chunks + document_chunks junction ──
+
+function migrateChunksDedup(db: Database.Database): void {
+	// Detect old schema: chunks table has document_id column
+	const cols = db.prepare("PRAGMA table_info(chunks)").all() as Array<{ name: string }>;
+	const hasDocumentId = cols.some(c => c.name === 'document_id');
+	if (!hasDocumentId) return; // Already migrated or fresh DB
+
+	console.log('[dedup-migration] Detected old chunks schema, migrating...');
+
+	// Disable foreign keys during migration to prevent CASCADE on DROP TABLE
+	db.pragma('foreign_keys = OFF');
+
+	const migrate = db.transaction(() => {
+		// 1. Create document_chunks junction table
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS document_chunks (
+				id INTEGER PRIMARY KEY,
+				document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+				chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+				page_start INTEGER,
+				page_end INTEGER,
+				UNIQUE(document_id, chunk_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_dc_document ON document_chunks(document_id);
+			CREATE INDEX IF NOT EXISTS idx_dc_chunk ON document_chunks(chunk_id);
+		`);
+
+		// 2. Populate junction from existing chunks
+		db.exec(`
+			INSERT OR IGNORE INTO document_chunks (document_id, chunk_id, page_start, page_end)
+			SELECT document_id, id, page_start, page_end FROM chunks
+		`);
+
+		// 3. Create new chunks table with content_hash, without document_id
+		db.exec(`
+			CREATE TABLE chunks_new (
+				id INTEGER PRIMARY KEY,
+				content_hash TEXT NOT NULL,
+				chunk_type TEXT NOT NULL CHECK(chunk_type IN ('clause', 'exemplar', 'evidence', 'table')),
+				section_label TEXT,
+				content TEXT NOT NULL,
+				confidence REAL DEFAULT 1.0
+			);
+		`);
+
+		// 4. Deduplicate: for each chunk, compute hash and handle duplicates
+		const allChunks = db.prepare('SELECT id, chunk_type, section_label, content, confidence FROM chunks ORDER BY id').all() as Array<{
+			id: number; chunk_type: string; section_label: string | null; content: string; confidence: number;
+		}>;
+
+		const hashToCanonicalId = new Map<string, number>();
+		const oldToCanonicalId = new Map<number, number>(); // maps old duplicate IDs to canonical IDs
+		const insertNew = db.prepare('INSERT INTO chunks_new (id, content_hash, chunk_type, section_label, content, confidence) VALUES (?, ?, ?, ?, ?, ?)');
+		const updateConfidence = db.prepare('UPDATE chunks_new SET confidence = ? WHERE id = ?');
+
+		for (const chunk of allChunks) {
+			const hash = contentHash(chunk.content);
+			const existing = hashToCanonicalId.get(hash);
+
+			if (existing !== undefined) {
+				// Duplicate — record mapping for repointing
+				oldToCanonicalId.set(chunk.id, existing);
+				// Keep highest confidence
+				const currentConf = (db.prepare('SELECT confidence FROM chunks_new WHERE id = ?').get(existing) as { confidence: number })?.confidence ?? 0;
+				if (chunk.confidence > currentConf) {
+					updateConfidence.run(chunk.confidence, existing);
+				}
+			} else {
+				// New canonical chunk
+				insertNew.run(chunk.id, hash, chunk.chunk_type, chunk.section_label, chunk.content, chunk.confidence);
+				hashToCanonicalId.set(hash, chunk.id);
+			}
+		}
+
+		// 5. Repoint document_chunks links for duplicates
+		const checkLink = db.prepare('SELECT 1 FROM document_chunks WHERE document_id = ? AND chunk_id = ?');
+		const updateLink = db.prepare('UPDATE document_chunks SET chunk_id = ? WHERE document_id = ? AND chunk_id = ?');
+		const deleteLink = db.prepare('DELETE FROM document_chunks WHERE document_id = ? AND chunk_id = ?');
+
+		for (const [oldId, canonicalId] of oldToCanonicalId) {
+			// Get all document_chunks rows pointing to the old duplicate chunk
+			const links = db.prepare('SELECT document_id FROM document_chunks WHERE chunk_id = ?').all(oldId) as Array<{ document_id: number }>;
+			for (const link of links) {
+				// Check if this document already has a link to the canonical chunk
+				const alreadyLinked = checkLink.get(link.document_id, canonicalId);
+				if (alreadyLinked) {
+					// Same-doc collision — content already represented, delete old link
+					deleteLink.run(link.document_id, oldId);
+				} else {
+					// Repoint to canonical
+					updateLink.run(canonicalId, link.document_id, oldId);
+				}
+			}
+		}
+
+		// 6. Clean up orphaned document_chunks (pointing to chunks not in chunks_new)
+		db.exec(`
+			DELETE FROM document_chunks
+			WHERE chunk_id NOT IN (SELECT id FROM chunks_new)
+		`);
+
+		// 7. Delete vec_chunks entries for removed duplicate chunk IDs
+		const duplicateIds = [...oldToCanonicalId.keys()];
+		if (duplicateIds.length > 0) {
+			const deleteVec = db.prepare('DELETE FROM vec_chunks WHERE rowid = ?');
+			for (const id of duplicateIds) {
+				deleteVec.run(id);
+			}
+		}
+
+		// 8. Swap tables
+		db.exec('DROP TABLE chunks');
+		db.exec('ALTER TABLE chunks_new RENAME TO chunks');
+
+		// 9. Recreate indexes
+		db.exec(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash);
+			CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(chunk_type);
+			CREATE INDEX IF NOT EXISTS idx_chunks_section ON chunks(section_label);
+		`);
+
+		const totalOld = allChunks.length;
+		const totalNew = hashToCanonicalId.size;
+		const dupes = totalOld - totalNew;
+		const ratio = totalOld > 0 ? (dupes / totalOld * 100).toFixed(1) : '0.0';
+		console.log(`[dedup-migration] Complete: ${totalOld} chunks → ${totalNew} canonical (${dupes} duplicates removed, ratio ${ratio}%)`);
+	});
+
+	try {
+		migrate();
+	} finally {
+		db.pragma('foreign_keys = ON');
+	}
+}
 
 export function getDb(): Database.Database {
 	if (_db) return _db;
@@ -23,9 +178,13 @@ export function getDb(): Database.Database {
 	// Load sqlite-vec extension
 	sqliteVec.load(_db);
 
-	// Run schema migrations
+	// Run schema — may partially fail on old DBs where chunks lacks content_hash
 	const schema = readFileSync(SCHEMA_PATH, 'utf-8');
-	_db.exec(schema);
+	try {
+		_db.exec(schema);
+	} catch {
+		// Expected on old DBs before migration — will re-run after
+	}
 
 	// Create vec_chunks virtual table if not exists
 	_db.exec(`
@@ -33,6 +192,12 @@ export function getDb(): Database.Database {
 			embedding float[768]
 		);
 	`);
+
+	// Migrate old chunks schema to deduplicated schema if needed
+	migrateChunksDedup(_db);
+
+	// Re-run schema to ensure all indexes exist (idempotent after migration)
+	_db.exec(schema);
 
 	return _db;
 }
@@ -69,7 +234,7 @@ export function listDocuments() {
 
 // ── Chunk helpers ──
 
-export function insertChunk(chunk: {
+export function insertOrDeduplicateChunk(chunk: {
 	document_id: number;
 	chunk_type: string;
 	section_label?: string;
@@ -77,19 +242,42 @@ export function insertChunk(chunk: {
 	page_end?: number;
 	content: string;
 	confidence?: number;
-}) {
+}): { chunkId: number; isDuplicate: boolean; needsEmbedding: boolean } {
 	const db = getDb();
-	const stmt = db.prepare(`
-		INSERT INTO chunks (document_id, chunk_type, section_label, page_start, page_end, content, confidence)
-		VALUES (@document_id, @chunk_type, @section_label, @page_start, @page_end, @content, @confidence)
-	`);
-	return stmt.run({
-		...chunk,
-		section_label: chunk.section_label ?? null,
-		page_start: chunk.page_start ?? null,
-		page_end: chunk.page_end ?? null,
-		confidence: chunk.confidence ?? 1.0
-	});
+	const hash = contentHash(chunk.content);
+	const conf = chunk.confidence ?? 1.0;
+
+	const existing = db.prepare('SELECT id, confidence FROM chunks WHERE content_hash = ?').get(hash) as
+		| { id: number; confidence: number }
+		| undefined;
+
+	if (existing) {
+		// Duplicate — link document to existing canonical chunk
+		db.prepare(
+			'INSERT OR IGNORE INTO document_chunks (document_id, chunk_id, page_start, page_end) VALUES (?, ?, ?, ?)'
+		).run(chunk.document_id, existing.id, chunk.page_start ?? null, chunk.page_end ?? null);
+
+		// Keep highest confidence
+		if (conf > existing.confidence) {
+			db.prepare('UPDATE chunks SET confidence = ? WHERE id = ?').run(conf, existing.id);
+		}
+
+		return { chunkId: existing.id, isDuplicate: true, needsEmbedding: false };
+	}
+
+	// New canonical chunk
+	const result = db.prepare(
+		'INSERT INTO chunks (content_hash, chunk_type, section_label, content, confidence) VALUES (?, ?, ?, ?, ?)'
+	).run(hash, chunk.chunk_type, chunk.section_label ?? null, chunk.content, conf);
+
+	const chunkId = Number(result.lastInsertRowid);
+
+	// Link document to chunk
+	db.prepare(
+		'INSERT INTO document_chunks (document_id, chunk_id, page_start, page_end) VALUES (?, ?, ?, ?)'
+	).run(chunk.document_id, chunkId, chunk.page_start ?? null, chunk.page_end ?? null);
+
+	return { chunkId, isDuplicate: false, needsEmbedding: true };
 }
 
 export function insertChunkEmbedding(chunkId: number | bigint, embedding: Float32Array) {
@@ -104,7 +292,8 @@ export function insertChunkEmbedding(chunkId: number | bigint, embedding: Float3
 export function searchSimilarChunks(embedding: Float32Array, limit = 10) {
 	const db = getDb();
 	const stmt = db.prepare(`
-		SELECT c.*, vec_chunks.distance
+		SELECT c.*, vec_chunks.distance,
+			(SELECT GROUP_CONCAT(dc.document_id) FROM document_chunks dc WHERE dc.chunk_id = c.id) as document_ids
 		FROM vec_chunks
 		JOIN chunks c ON c.id = vec_chunks.rowid
 		WHERE embedding MATCH ? AND k = ?

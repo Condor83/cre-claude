@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { insertDocument, updateDocumentStatus, insertChunk, getDb } from '$lib/db/index.js';
+import { insertDocument, updateDocumentStatus, insertOrDeduplicateChunk, getDb } from '$lib/db/index.js';
 import { extractPagesFromPdf, classifyChunks } from '$lib/ingest/chunker.js';
 import { extractEntities, persistExtractionResults } from '$lib/ingest/extractor.js';
 import { embedAndStoreChunks } from '$lib/embed/gemini.js';
@@ -56,10 +56,11 @@ async function processDocument(documentId: number, file: File) {
 		// Step 2: Classify chunks (Claude Pass 1)
 		const classifiedChunks = await classifyChunks(pages);
 
-		// Step 3: Store chunks in DB
-		const storedChunks: Array<{ id: number; content: string }> = [];
+		// Step 3: Store chunks in DB (with deduplication)
+		const chunksToEmbed: Array<{ id: number; content: string }> = [];
+		let dupCount = 0;
 		for (const chunk of classifiedChunks) {
-			const result = insertChunk({
+			const { chunkId, isDuplicate, needsEmbedding } = insertOrDeduplicateChunk({
 				document_id: documentId,
 				chunk_type: chunk.chunk_type,
 				section_label: chunk.section_label,
@@ -68,11 +69,12 @@ async function processDocument(documentId: number, file: File) {
 				content: chunk.content,
 				confidence: chunk.confidence
 			});
-			storedChunks.push({
-				id: Number(result.lastInsertRowid),
-				content: chunk.content
-			});
+			if (needsEmbedding) {
+				chunksToEmbed.push({ id: chunkId, content: chunk.content });
+			}
+			if (isDuplicate) dupCount++;
 		}
+		console.log(`Document ${documentId}: ${classifiedChunks.length} chunks classified, ${dupCount} exact duplicates skipped, ${chunksToEmbed.length} new canonical chunks`);
 
 		// Step 4: Extract entities (Claude Pass 2)
 		const entities = await extractEntities(classifiedChunks);
@@ -89,11 +91,13 @@ async function processDocument(documentId: number, file: File) {
 		// Step 5: Persist extracted entities
 		persistExtractionResults(documentId, entities);
 
-		// Step 6: Embed chunks
-		try {
-			await embedAndStoreChunks(storedChunks);
-		} catch (err) {
-			console.warn(`Embedding failed for document ${documentId}, continuing without vectors:`, err);
+		// Step 6: Embed new canonical chunks (duplicates already have embeddings)
+		if (chunksToEmbed.length > 0) {
+			try {
+				await embedAndStoreChunks(chunksToEmbed);
+			} catch (err) {
+				console.warn(`Embedding failed for document ${documentId}, continuing without vectors:`, err);
+			}
 		}
 
 		updateDocumentStatus(documentId, 'ready');

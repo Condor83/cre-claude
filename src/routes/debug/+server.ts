@@ -12,6 +12,9 @@ export const GET: RequestHandler = async ({ url }) => {
 		const propCount = (db.prepare('SELECT COUNT(*) as n FROM properties').get() as { n: number }).n;
 		const saleCount = (db.prepare('SELECT COUNT(*) as n FROM sales').get() as { n: number }).n;
 		const leaseCount = (db.prepare('SELECT COUNT(*) as n FROM leases').get() as { n: number }).n;
+		const linkCount = (db.prepare('SELECT COUNT(*) as n FROM document_chunks').get() as { n: number }).n;
+
+		const dedupRatio = linkCount > 0 ? 1 - (chunkCount / linkCount) : 0;
 
 		const types = db.prepare('SELECT chunk_type, COUNT(*) as n FROM chunks GROUP BY chunk_type').all();
 
@@ -21,13 +24,19 @@ export const GET: RequestHandler = async ({ url }) => {
 
 		const samples = db.prepare(`
 			SELECT c.id, c.chunk_type, c.section_label, c.confidence,
-				length(c.content) as content_len, c.page_start, c.page_end
+				length(c.content) as content_len
 			FROM chunks c
 			ORDER BY c.id
 			LIMIT 30
 		`).all();
 
-		return json({ chunkCount, vecCount, propCount, saleCount, leaseCount, types, sectionLabels, samples });
+		return json({
+			canonical_chunks: chunkCount,
+			document_chunk_links: linkCount,
+			dedup_ratio: Math.round(dedupRatio * 1000) / 1000,
+			vecCount, propCount, saleCount, leaseCount,
+			types, sectionLabels, samples
+		});
 	}
 
 	if (action === 'pages') {
@@ -131,7 +140,8 @@ export const GET: RequestHandler = async ({ url }) => {
 			const results = db.prepare(`
 				SELECT c.id, c.chunk_type, c.section_label, c.confidence,
 					substr(c.content, 1, 200) as content_preview,
-					vec_chunks.distance
+					vec_chunks.distance,
+					(SELECT GROUP_CONCAT(dc.document_id) FROM document_chunks dc WHERE dc.chunk_id = c.id) as document_ids
 				FROM vec_chunks
 				JOIN chunks c ON c.id = vec_chunks.rowid
 				WHERE embedding MATCH ? AND k = ?
@@ -159,20 +169,37 @@ export const GET: RequestHandler = async ({ url }) => {
 			const { extractPagesFromPdf, classifyChunks } = await import('$lib/ingest/chunker.js');
 			const { extractEntities, persistExtractionResults } = await import('$lib/ingest/extractor.js');
 			const { embedAndStoreChunks } = await import('$lib/embed/gemini.js');
-			const { insertChunk, updateDocumentStatus } = await import('$lib/db/index.js');
+			const { insertOrDeduplicateChunk, updateDocumentStatus } = await import('$lib/db/index.js');
 
-			// Step 1: Delete existing data for this document
-			const chunkIds = db.prepare('SELECT id FROM chunks WHERE document_id = ?').all(docId) as Array<{ id: number }>;
-			for (const c of chunkIds) {
-				db.prepare('DELETE FROM vec_chunks WHERE rowid = ?').run(c.id);
-			}
-			db.prepare('DELETE FROM chunks WHERE document_id = ?').run(docId);
-			db.prepare('DELETE FROM sales WHERE source_document_id = ?').run(docId);
-			db.prepare('DELETE FROM leases WHERE source_document_id = ?').run(docId);
-			db.prepare('DELETE FROM document_properties WHERE document_id = ?').run(docId);
-			db.prepare('UPDATE documents SET status = ?, report_number = NULL, report_date = NULL WHERE id = ?').run('processing', docId);
+			// Step 1: Unlink this document's chunks (shared-chunk safe, atomic)
+			let orphansRemoved = 0;
+			let unlinkedCount = 0;
+			const cleanup = db.transaction(() => {
+				const linkedChunkIds = db.prepare(
+					'SELECT chunk_id FROM document_chunks WHERE document_id = ?'
+				).all(docId) as Array<{ chunk_id: number }>;
+				unlinkedCount = linkedChunkIds.length;
 
-			const deletedChunks = chunkIds.length;
+				db.prepare('DELETE FROM document_chunks WHERE document_id = ?').run(docId);
+
+				// Orphan cleanup: delete chunks (and vec_chunks) with no remaining links
+				for (const { chunk_id } of linkedChunkIds) {
+					const stillLinked = db.prepare(
+						'SELECT 1 FROM document_chunks WHERE chunk_id = ?'
+					).get(chunk_id);
+					if (!stillLinked) {
+						db.prepare('DELETE FROM vec_chunks WHERE rowid = ?').run(chunk_id);
+						db.prepare('DELETE FROM chunks WHERE id = ?').run(chunk_id);
+						orphansRemoved++;
+					}
+				}
+
+				db.prepare('DELETE FROM sales WHERE source_document_id = ?').run(docId);
+				db.prepare('DELETE FROM leases WHERE source_document_id = ?').run(docId);
+				db.prepare('DELETE FROM document_properties WHERE document_id = ?').run(docId);
+				db.prepare('UPDATE documents SET status = ?, report_number = NULL, report_date = NULL WHERE id = ?').run('processing', docId);
+			});
+			cleanup();
 
 			// Step 2: Find and read PDF
 			const pdfDir = join(process.cwd(), 'docs', 'appraisal-reports');
@@ -184,10 +211,11 @@ export const GET: RequestHandler = async ({ url }) => {
 			// Step 3: Classify chunks with updated prompt
 			const classifiedChunks = await classifyChunks(pages);
 
-			// Step 4: Store chunks
-			const storedChunks: Array<{ id: number; content: string }> = [];
+			// Step 4: Store chunks (with deduplication)
+			const chunksToEmbed: Array<{ id: number; content: string }> = [];
+			let dupCount = 0;
 			for (const chunk of classifiedChunks) {
-				const result = insertChunk({
+				const { chunkId, isDuplicate, needsEmbedding } = insertOrDeduplicateChunk({
 					document_id: docId,
 					chunk_type: chunk.chunk_type,
 					section_label: chunk.section_label,
@@ -196,7 +224,10 @@ export const GET: RequestHandler = async ({ url }) => {
 					content: chunk.content,
 					confidence: chunk.confidence
 				});
-				storedChunks.push({ id: Number(result.lastInsertRowid), content: chunk.content });
+				if (needsEmbedding) {
+					chunksToEmbed.push({ id: chunkId, content: chunk.content });
+				}
+				if (isDuplicate) dupCount++;
 			}
 
 			// Step 5: Extract entities (with cover_page/transmittal now included)
@@ -210,27 +241,37 @@ export const GET: RequestHandler = async ({ url }) => {
 			}
 			persistExtractionResults(docId, entities);
 
-			// Step 6: Embed chunks
+			// Step 6: Embed new canonical chunks
 			let embedResult = null;
-			try {
-				embedResult = await embedAndStoreChunks(storedChunks);
-			} catch (err) {
-				console.warn(`Embedding failed for doc ${docId}:`, err);
-				embedResult = { error: String(err) };
+			if (chunksToEmbed.length > 0) {
+				try {
+					embedResult = await embedAndStoreChunks(chunksToEmbed);
+				} catch (err) {
+					console.warn(`Embedding failed for doc ${docId}:`, err);
+					embedResult = { error: String(err) };
+				}
 			}
 
 			updateDocumentStatus(docId, 'ready');
 
-			// Gather new section_label distribution for this doc
-			const newLabels = db.prepare(
-				'SELECT section_label, chunk_type, COUNT(*) as n FROM chunks WHERE document_id = ? GROUP BY section_label, chunk_type ORDER BY n DESC'
-			).all(docId);
+			// Gather section_label distribution for this doc via junction
+			const newLabels = db.prepare(`
+				SELECT c.section_label, c.chunk_type, COUNT(*) as n
+				FROM document_chunks dc
+				JOIN chunks c ON c.id = dc.chunk_id
+				WHERE dc.document_id = ?
+				GROUP BY c.section_label, c.chunk_type
+				ORDER BY n DESC
+			`).all(docId);
 
 			return json({
 				document: docId,
 				filename: doc.filename,
-				deletedChunks,
-				newChunks: storedChunks.length,
+				unlinkedChunks: unlinkedCount,
+				orphansRemoved,
+				newChunks: chunksToEmbed.length,
+				duplicatesSkipped: dupCount,
+				totalClassified: classifiedChunks.length,
 				pageCount,
 				report_number: entities.report_number,
 				report_date: entities.report_date,
@@ -241,6 +282,85 @@ export const GET: RequestHandler = async ({ url }) => {
 			});
 		} catch (err) {
 			db.prepare('UPDATE documents SET status = ?, error_message = ? WHERE id = ?').run('error', String(err), docId);
+			return json({ error: String(err), stack: (err as Error).stack }, { status: 500 });
+		}
+	}
+
+	if (action === 'dedup-near') {
+		// Near-duplicate detection: find chunk pairs with similar embeddings
+		const threshold = Number(url.searchParams.get('threshold') ?? 0.30);
+
+		try {
+			const chunks = db.prepare(`
+				SELECT c.id, c.chunk_type, c.section_label, substr(c.content, 1, 200) as content_preview
+				FROM chunks c
+				WHERE c.id IN (SELECT rowid FROM vec_chunks)
+			`).all() as Array<{ id: number; chunk_type: string; section_label: string; content_preview: string }>;
+
+			const candidates: Array<{
+				chunk_a: number;
+				chunk_b: number;
+				section_label: string;
+				chunk_type: string;
+				distance: number;
+				preview_a: string;
+				preview_b: string;
+			}> = [];
+
+			const seen = new Set<string>();
+
+			for (const chunk of chunks) {
+				// Get this chunk's embedding
+				const vecRow = db.prepare('SELECT embedding FROM vec_chunks WHERE rowid = ?').get(chunk.id) as { embedding: Buffer } | undefined;
+				if (!vecRow) continue;
+
+				// Find nearest neighbors (k=3 to get non-self matches)
+				const neighbors = db.prepare(`
+					SELECT vec_chunks.rowid as id, vec_chunks.distance
+					FROM vec_chunks
+					WHERE embedding MATCH ? AND k = 3
+					ORDER BY distance
+				`).all(vecRow.embedding, 3) as Array<{ id: number; distance: number }>;
+
+				for (const neighbor of neighbors) {
+					if (neighbor.id === chunk.id) continue;
+					if (neighbor.distance >= threshold) continue;
+
+					// Deduplicate pairs
+					const pairKey = [Math.min(chunk.id, neighbor.id), Math.max(chunk.id, neighbor.id)].join('-');
+					if (seen.has(pairKey)) continue;
+					seen.add(pairKey);
+
+					// Get neighbor details
+					const neighborChunk = db.prepare(
+						'SELECT chunk_type, section_label, substr(content, 1, 200) as content_preview FROM chunks WHERE id = ?'
+					).get(neighbor.id) as { chunk_type: string; section_label: string; content_preview: string } | undefined;
+					if (!neighborChunk) continue;
+
+					// Filter: same chunk_type AND same section_label
+					if (neighborChunk.chunk_type !== chunk.chunk_type) continue;
+					if (neighborChunk.section_label !== chunk.section_label) continue;
+
+					candidates.push({
+						chunk_a: chunk.id,
+						chunk_b: neighbor.id,
+						section_label: chunk.section_label,
+						chunk_type: chunk.chunk_type,
+						distance: Math.round(neighbor.distance * 10000) / 10000,
+						preview_a: chunk.content_preview,
+						preview_b: neighborChunk.content_preview
+					});
+				}
+			}
+
+			candidates.sort((a, b) => a.distance - b.distance);
+
+			return json({
+				threshold,
+				candidates_found: candidates.length,
+				candidates: candidates.slice(0, 50)
+			});
+		} catch (err) {
 			return json({ error: String(err), stack: (err as Error).stack }, { status: 500 });
 		}
 	}
