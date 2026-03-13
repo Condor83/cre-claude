@@ -98,7 +98,7 @@ export function insertChunkEmbedding(chunkId: number | bigint, embedding: Float3
 		INSERT INTO vec_chunks (rowid, embedding)
 		VALUES (?, ?)
 	`);
-	return stmt.run(Number(chunkId), Buffer.from(embedding.buffer));
+	return stmt.run(BigInt(chunkId), Buffer.from(embedding.buffer));
 }
 
 export function searchSimilarChunks(embedding: Float32Array, limit = 10) {
@@ -107,9 +107,8 @@ export function searchSimilarChunks(embedding: Float32Array, limit = 10) {
 		SELECT c.*, vec_chunks.distance
 		FROM vec_chunks
 		JOIN chunks c ON c.id = vec_chunks.rowid
-		WHERE embedding MATCH ?
+		WHERE embedding MATCH ? AND k = ?
 		ORDER BY distance
-		LIMIT ?
 	`);
 	return stmt.all(Buffer.from(embedding.buffer), limit);
 }
@@ -117,6 +116,7 @@ export function searchSimilarChunks(embedding: Float32Array, limit = 10) {
 // ── Property helpers ──
 
 export function normalizeAddress(address: string): string {
+	if (!address) return '';
 	return address
 		.toLowerCase()
 		.replace(/\bstreet\b/g, 'st')

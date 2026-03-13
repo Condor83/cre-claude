@@ -61,7 +61,9 @@ export async function embedAndStoreChunks(
 
 	for (const chunk of chunks) {
 		try {
-			const embedding = await embedForStorage(chunk.content);
+			// Truncate to ~6000 chars (~2000 tokens) to stay well within 8192 token limit
+			const text = chunk.content.length > 6000 ? chunk.content.slice(0, 6000) : chunk.content;
+			const embedding = await embedForStorage(text);
 
 			// Check for zero vector
 			const isZero = embedding.every((v) => v === 0);

@@ -163,6 +163,10 @@ export function persistExtractionResults(
 ) {
 	// Persist sale comps
 	for (const comp of result.sale_comps) {
+		if (!comp.property?.address) {
+			console.warn('Skipping sale comp with no address');
+			continue;
+		}
 		const propertyId = findOrCreateProperty(comp.property);
 		linkDocumentProperty(documentId, propertyId, comp.role, undefined, comp.confidence);
 		const s = comp.sale;
@@ -185,6 +189,10 @@ export function persistExtractionResults(
 
 	// Persist lease comps
 	for (const comp of result.lease_comps) {
+		if (!comp.property?.address) {
+			console.warn('Skipping lease comp with no address');
+			continue;
+		}
 		const propertyId = findOrCreateProperty(comp.property);
 		linkDocumentProperty(documentId, propertyId, comp.role, undefined, comp.confidence);
 		const l = comp.lease;
