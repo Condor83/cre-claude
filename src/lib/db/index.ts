@@ -335,7 +335,7 @@ export function insertSale(sale: {
 		source_document_id: sale.source_document_id ?? null,
 		source_page: sale.source_page ?? null,
 		confidence: sale.confidence ?? 1.0,
-		mls_sourced: sale.mls_sourced ?? false
+		mls_sourced: sale.mls_sourced ? 1 : 0
 	});
 }
 
@@ -381,7 +381,7 @@ export function insertLease(lease: {
 		source_document_id: lease.source_document_id ?? null,
 		source_page: lease.source_page ?? null,
 		confidence: lease.confidence ?? 1.0,
-		mls_sourced: lease.mls_sourced ?? false
+		mls_sourced: lease.mls_sourced ? 1 : 0
 	});
 }
 

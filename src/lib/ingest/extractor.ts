@@ -144,6 +144,19 @@ ${chunksText}`
 	}
 }
 
+// Coerce a value to a SQLite-safe type (string, number, or null)
+function toStr(v: unknown): string | null {
+	if (v == null) return null;
+	if (typeof v === 'string') return v;
+	return String(v);
+}
+
+function toNum(v: unknown): number | null {
+	if (v == null) return null;
+	const n = Number(v);
+	return isFinite(n) ? n : null;
+}
+
 export function persistExtractionResults(
 	documentId: number,
 	result: ExtractionResult
@@ -152,10 +165,18 @@ export function persistExtractionResults(
 	for (const comp of result.sale_comps) {
 		const propertyId = findOrCreateProperty(comp.property);
 		linkDocumentProperty(documentId, propertyId, comp.role, undefined, comp.confidence);
-		if (comp.sale.sale_price || comp.sale.sale_date) {
+		const s = comp.sale;
+		if (s.sale_price || s.sale_date) {
 			insertSale({
 				property_id: propertyId,
-				...comp.sale,
+				sale_date: toStr(s.sale_date) ?? undefined,
+				sale_price: toNum(s.sale_price) ?? undefined,
+				price_per_sf: toNum(s.price_per_sf) ?? undefined,
+				cap_rate: toNum(s.cap_rate) ?? undefined,
+				grantor: toStr(s.grantor) ?? undefined,
+				grantee: toStr(s.grantee) ?? undefined,
+				financing: toStr(s.financing) ?? undefined,
+				verification_source: toStr(s.verification_source) ?? undefined,
 				source_document_id: documentId,
 				confidence: comp.confidence
 			});
@@ -166,10 +187,18 @@ export function persistExtractionResults(
 	for (const comp of result.lease_comps) {
 		const propertyId = findOrCreateProperty(comp.property);
 		linkDocumentProperty(documentId, propertyId, comp.role, undefined, comp.confidence);
-		if (comp.lease.rent_per_sf || comp.lease.tenant_name) {
+		const l = comp.lease;
+		if (l.rent_per_sf || l.tenant_name) {
 			insertLease({
 				property_id: propertyId,
-				...comp.lease,
+				tenant_name: toStr(l.tenant_name) ?? undefined,
+				lease_sf: toNum(l.lease_sf) ?? undefined,
+				rent_per_sf: toNum(l.rent_per_sf) ?? undefined,
+				lease_type: toStr(l.lease_type) ?? undefined,
+				commencement_date: toStr(l.commencement_date) ?? undefined,
+				term_years: toNum(l.term_years) ?? undefined,
+				escalations: toStr(l.escalations) ?? undefined,
+				office_pct: toNum(l.office_pct) ?? undefined,
 				source_document_id: documentId,
 				confidence: comp.confidence
 			});
