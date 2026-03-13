@@ -10,6 +10,16 @@ export interface CopilotContext {
 	sectionType: 'boilerplate' | 'comp' | 'narrative';
 }
 
+/** Addendum section labels — excluded from general copilot context retrieval */
+const ADDENDUM_SECTIONS = new Set([
+	'definitions_glossary',
+	'zoning_code',
+	'economic_snapshot',
+	'legal_description',
+	'engagement_letter',
+	'addendum_other'
+]);
+
 // Section types determine context shape
 const SECTION_TYPES: Record<string, 'boilerplate' | 'comp' | 'narrative'> = {
 	transmittal: 'boilerplate',
@@ -88,7 +98,7 @@ export async function assembleContext(
 			.map((c) => c.content);
 
 		clauses = similar
-			.filter((c) => c.chunk_type === 'clause')
+			.filter((c) => c.chunk_type === 'clause' && !ADDENDUM_SECTIONS.has(c.section_label))
 			.slice(0, 5)
 			.map((c) => c.content);
 	} catch {
@@ -99,6 +109,8 @@ export async function assembleContext(
 				`
 			SELECT content, chunk_type FROM chunks
 			WHERE section_label = ? AND chunk_type IN ('exemplar', 'clause')
+				AND section_label NOT IN ('definitions_glossary', 'zoning_code', 'economic_snapshot',
+					'legal_description', 'engagement_letter', 'addendum_other')
 			ORDER BY confidence DESC
 			LIMIT 8
 		`

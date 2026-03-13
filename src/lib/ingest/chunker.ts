@@ -71,8 +71,25 @@ export async function classifyChunks(pages: PageText[]): Promise<ClassifiedChunk
 For each page, return:
 - page: the page number
 - chunk_type: "clause" (boilerplate, definitions, reusable language), "exemplar" (section structure examples, narrative samples), "evidence" (facts: property details, sale prices, lease terms), or "table" (structured data: grids, summaries, rent rolls)
-- section_label: one of: transmittal, certification, assumptions, scope_of_work, neighborhood, site_description, improvement_description, highest_best_use, sales_comparison, income_approach, reconciliation, comp_sale_data, comp_lease_data, adjustment_grid, operating_statement, subject_lease_table, appraiser_qualifications, photos, maps, cover_page, table_of_contents
+- section_label: one of: transmittal, certification, assumptions, scope_of_work, neighborhood, site_description, improvement_description, highest_best_use, sales_comparison, income_approach, reconciliation, comp_sale_data, comp_lease_data, adjustment_grid, operating_statement, subject_lease_table, appraiser_qualifications, photos, maps, cover_page, table_of_contents, definitions_glossary, zoning_code, economic_snapshot, legal_description, engagement_letter, addendum_other
 - confidence: 0.0-1.0
+
+ADDENDUM DETECTION: Reports typically include an addendum/appendix after the main report body
+(after appraiser qualifications). Addendum content includes:
+- definitions_glossary: Standard appraisal term definitions (starts with "DEFINITIONS" header)
+- zoning_code: Municipal/city zoning code excerpts, ordinances, supplementary regulations
+  (look for: ordinance numbers "Ord. No. ...", section numbers "Sec 17.x.xxx", regulatory
+  language about setbacks, parking, landscaping, signs)
+- economic_snapshot: County/regional economic data tables and charts
+  (look for: "ECONOMIC SNAPSHOT", job statistics, construction data)
+- legal_description: Metes and bounds legal descriptions, lot/plat references
+  (look for: "LEGAL DESCRIPTION", "COM S ...", surveyor bearings)
+- engagement_letter: Client authorization/engagement letter
+- addendum_other: Any other reference material attached to the report that doesn't fit
+  the above categories
+
+Addendum pages are typically clause or table chunk_type (not exemplar or evidence),
+unless they contain property-specific facts (legal_description → evidence).
 
 Do NOT return the page content — only the classification.
 Do NOT wrap in markdown. Return a raw JSON array.
