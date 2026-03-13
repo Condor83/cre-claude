@@ -1,0 +1,173 @@
+# CRE Copilot — Codebase Map
+# Each entry: file path, purpose, and key exports/endpoints
+
+project:
+  name: CRE Copilot
+  description: AI-powered commercial real estate appraisal report authoring
+  framework: SvelteKit 2 + Svelte 5
+  runtime: Node.js (adapter-node)
+  database: SQLite + sqlite-vec
+
+config:
+  package.json:         Dependencies and npm scripts (dev, build, check)
+  svelte.config.js:     SvelteKit config — adapter-node, vitePreprocess
+  vite.config.ts:       Vite config — sveltekit plugin
+  tsconfig.json:        TypeScript strict mode, extends .svelte-kit/tsconfig
+  .env:                 API keys — ANTHROPIC_API_KEY, GEMINI_API_KEY
+
+entry:
+  src/app.html:         HTML shell template
+  src/app.d.ts:         Global TypeScript declarations
+
+database:
+  src/lib/db/schema.sql:
+    purpose: Table definitions (CREATE TABLE IF NOT EXISTS)
+    tables:
+      - documents:           Uploaded PDFs, processing status
+      - chunks:              Classified page sections with content
+      - vec_chunks:          sqlite-vec virtual table, 768-dim embeddings
+      - properties:          Canonical property records (dedup by APN)
+      - document_properties: Junction — document → property + role
+      - sales:               Sale comparable transactions
+      - leases:              Lease comparable transactions
+      - reports:             Reports being authored
+      - report_sections:     TipTap editor state per section
+      - report_comps:        Selected comparables + adjustments
+
+  src/lib/db/index.ts:
+    purpose: Singleton DB connection, all query helpers
+    exports:
+      - getDb:                 Singleton connection (auto-init)
+      - insertDocument:        Create document record
+      - updateDocumentStatus:  Track processing state
+      - insertChunk:           Store classified chunk
+      - insertChunkEmbedding:  Store vector in vec_chunks
+      - searchSimilarChunks:   k-NN vector search
+      - findOrCreateProperty:  APN-first deduplication
+      - normalizeAddress:      Standardize address strings
+      - linkDocumentProperty:  Document → property junction
+      - searchProperties:      Filtered property search
+      - insertSale:            Persist sale transaction
+      - insertLease:           Persist lease transaction
+      - createReport:          New report record
+      - getReport:             Fetch report + property
+      - listReports:           All reports with subject info
+      - saveSection:           Autosave section content
+      - getSections:           All sections for a report
+      - getSection:            Single section by key
+      - addReportComp:         Add comparable to report
+      - getReportComps:        Report's selected comps
+
+ingestion:
+  scripts/extract-pdf.py:
+    purpose: PyMuPDF PDF-to-text extraction
+    input: PDF file path (argv)
+    output: JSON to stdout — {pageCount, pages[{page, text}]}
+
+  src/lib/ingest/chunker.ts:
+    purpose: PDF extraction + Claude page classification
+    exports:
+      - extractPagesFromPdf:   Buffer → pages via PyMuPDF subprocess
+      - classifyChunks:        Pages → classified chunks (Claude, batch 10)
+    chunk_types: [clause, exemplar, evidence, table]
+    section_labels:
+      - cover_page, transmittal, certification, table_of_contents
+      - scope_of_work, assumptions, neighborhood, site_description
+      - improvement_description, highest_best_use, sales_comparison
+      - income_approach, reconciliation, appraiser_qualifications
+      - comp_sale_data, comp_lease_data, adjustment_grid
+      - operating_statement, subject_lease_table
+      - definitions_glossary, zoning_code, economic_snapshot
+      - legal_description, engagement_letter, addendum_other
+
+  src/lib/ingest/extractor.ts:
+    purpose: Entity extraction from classified chunks + DB persistence
+    exports:
+      - extractEntities:          Chunks → sale/lease comps + metadata (Claude)
+      - persistExtractionResults: Write entities to properties/sales/leases tables
+
+embeddings:
+  src/lib/embed/gemini.ts:
+    purpose: Gemini embedding generation, normalization, batch storage
+    model: gemini-embedding-2-preview (768 dims, MRL from 3072)
+    exports:
+      - embedText:            Core embedding call with task type
+      - embedForStorage:      Document embedding (RETRIEVAL_DOCUMENT)
+      - embedForQuery:        Query embedding (RETRIEVAL_QUERY)
+      - embedAndStoreChunks:  Batch embed + insert into vec_chunks
+
+copilot:
+  src/lib/copilot/context.ts:
+    purpose: Context assembly for AI writing — semantic search + structured queries
+    exports:
+      - assembleContext:  Build CopilotContext (subject, comps, exemplars, clauses)
+    section_types:
+      boilerplate: [transmittal, certification, assumptions, scope_of_work, appraiser_qualifications]
+      comp: [sales_comparison, income_approach, comp_sale_data, comp_lease_data, adjustment_grid, operating_statement, subject_lease_table]
+      narrative: [neighborhood, site_description, improvement_description, highest_best_use, reconciliation]
+
+  src/lib/copilot/writer.ts:
+    purpose: Claude-powered section text generation
+    exports:
+      - generateSectionText:  Context + user text → continuation + citations
+      - buildPrompt:          Assemble prompt by section type
+
+export:
+  src/lib/export/docx.ts:
+    purpose: DOCX report generation
+    exports:
+      - generateDocx:  Report ID → DOCX Buffer (title page, 12 sections, comp table)
+
+components:
+  src/lib/components/Editor.svelte:
+    purpose: TipTap rich text editor with autosave + ghost text
+  src/lib/components/SectionNav.svelte:
+    purpose: Section sidebar navigation with completion status
+  src/lib/components/CompSearch.svelte:
+    purpose: Comparable property search and selection panel
+  src/lib/components/AdjustmentGrid.svelte:
+    purpose: Comparable adjustments editor (13 rows, net/gross calc)
+  src/lib/components/PropertyCard.svelte:
+    purpose: Property detail display card
+
+routes:
+  src/routes/+page.svelte:
+    purpose: Dashboard — stats, recent reports, recent documents
+  src/routes/+page.server.ts:
+    purpose: Dashboard data loader
+
+  src/routes/ingest/+page.svelte:
+    purpose: PDF upload UI with status polling
+  src/routes/ingest/+server.ts:
+    purpose: POST upload + GET document list
+    endpoints:
+      - POST /ingest:  Upload PDF, trigger async processing
+      - GET /ingest:   List all documents with status
+
+  src/routes/properties/+page.svelte:
+    purpose: Property browser with filters
+  src/routes/properties/+server.ts:
+    purpose: GET filtered property search (+ optional semantic search)
+
+  src/routes/reports/new/+page.svelte:
+    purpose: New report wizard (select property, set approach)
+  src/routes/reports/+server.ts:
+    purpose: POST create report, GET list reports
+  src/routes/reports/[id]/+page.svelte:
+    purpose: Report editor — section nav, TipTap editor, comp panel
+  src/routes/reports/[id]/+page.server.ts:
+    purpose: Load report data (sections, comps, property)
+  src/routes/reports/[id]/+server.ts:
+    purpose: PUT save section/comp, POST generate ghost text
+
+  src/routes/export/+server.ts:
+    purpose: GET /export?report_id=N → DOCX download
+
+  src/routes/debug/+server.ts:
+    purpose: Pipeline inspection and testing
+    actions: [summary, pages, test-embed, embed-all, similarity, reingest]
+
+data:
+  data/cre-copilot.db:       SQLite database (auto-created, WAL mode)
+  docs/appraisal-reports/:    Source PDFs for ingestion (9 sample reports)
+  static/favicon.png:         Favicon
