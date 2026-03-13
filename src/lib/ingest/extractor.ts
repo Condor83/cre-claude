@@ -80,7 +80,8 @@ export async function extractEntities(
 ): Promise<ExtractionResult> {
 	// Filter to evidence and table chunks for entity extraction
 	const relevantChunks = chunks.filter(
-		(c) => c.chunk_type === 'evidence' || c.chunk_type === 'table'
+		(c) => c.chunk_type === 'evidence' || c.chunk_type === 'table' ||
+			(c.chunk_type === 'clause' && (c.section_label === 'cover_page' || c.section_label === 'transmittal'))
 	);
 
 	if (relevantChunks.length === 0) {
@@ -170,7 +171,7 @@ export function persistExtractionResults(
 		const propertyId = findOrCreateProperty(comp.property);
 		linkDocumentProperty(documentId, propertyId, comp.role, undefined, comp.confidence);
 		const s = comp.sale;
-		if (s.sale_price || s.sale_date) {
+		if (s && (s.sale_price || s.sale_date)) {
 			insertSale({
 				property_id: propertyId,
 				sale_date: toStr(s.sale_date) ?? undefined,
@@ -196,7 +197,7 @@ export function persistExtractionResults(
 		const propertyId = findOrCreateProperty(comp.property);
 		linkDocumentProperty(documentId, propertyId, comp.role, undefined, comp.confidence);
 		const l = comp.lease;
-		if (l.rent_per_sf || l.tenant_name) {
+		if (l && (l.rent_per_sf || l.tenant_name)) {
 			insertLease({
 				property_id: propertyId,
 				tenant_name: toStr(l.tenant_name) ?? undefined,
