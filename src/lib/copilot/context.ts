@@ -1,5 +1,5 @@
 import { getDb, getSections, getReportComps, searchSimilarChunks } from '$lib/db/index.js';
-import { embedText } from '$lib/embed/gemini.js';
+import { embedForQuery } from '$lib/embed/gemini.js';
 
 export interface CopilotContext {
 	subject: Record<string, unknown>;
@@ -74,7 +74,7 @@ export async function assembleContext(
 
 	try {
 		const queryText = `${sectionKey} section commercial real estate appraisal`;
-		const queryEmbedding = await embedText(queryText);
+		const queryEmbedding = await embedForQuery(queryText);
 
 		const similar = searchSimilarChunks(queryEmbedding, 10) as Array<{
 			chunk_type: string;

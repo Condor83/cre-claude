@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { searchProperties, searchSimilarChunks } from '$lib/db/index.js';
-import { embedText } from '$lib/embed/gemini.js';
+import { embedForQuery } from '$lib/embed/gemini.js';
 
 export const GET: RequestHandler = async ({ url }) => {
 	const filters = {
@@ -24,7 +24,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	const semanticQuery = url.searchParams.get('semantic');
 	if (semanticQuery) {
 		try {
-			const embedding = await embedText(semanticQuery);
+			const embedding = await embedForQuery(semanticQuery);
 			const similar = searchSimilarChunks(embedding, 20) as Array<{ document_id: number }>;
 			vectorResults = [...new Set(similar.map((s) => s.document_id))];
 		} catch {

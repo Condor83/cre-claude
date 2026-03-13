@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@google/generative-ai": "^0.21.0",
+    "@google/generative-ai": "^0.24.1",
     "@sveltejs/adapter-node": "^5.5.4",
     "@tiptap/core": "^2.11.0",
     "@tiptap/extension-placeholder": "^2.11.0",

@@ -1,5 +1,8 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
 import { insertChunkEmbedding } from '$lib/db/index.js';
+
+const MODEL = 'gemini-embedding-2-preview';
+const OUTPUT_DIMS = 768; // MRL truncation: 67.99 MTEB vs 68.16 at 3072, saves 4x storage
 
 let genAI: GoogleGenerativeAI | null = null;
 
@@ -12,18 +15,43 @@ function getClient(): GoogleGenerativeAI {
 	return genAI;
 }
 
-export async function embedText(text: string): Promise<Float32Array> {
-	const client = getClient();
-	const model = client.getGenerativeModel({ model: 'text-embedding-004' });
+function normalize(values: number[]): Float32Array {
+	// Sub-3072 dims from MRL need L2 normalization for accurate cosine similarity
+	let norm = 0;
+	for (const v of values) norm += v * v;
+	norm = Math.sqrt(norm);
+	const out = new Float32Array(values.length);
+	if (norm > 0) {
+		for (let i = 0; i < values.length; i++) out[i] = values[i] / norm;
+	}
+	return out;
+}
 
-	const result = await model.embedContent(text);
+export async function embedText(text: string, taskType: TaskType = TaskType.RETRIEVAL_QUERY): Promise<Float32Array> {
+	const client = getClient();
+	const model = client.getGenerativeModel({ model: MODEL });
+
+	// outputDimensionality is supported by the API but not yet in the SDK types
+	const result = await model.embedContent({
+		content: { parts: [{ text }], role: 'user' },
+		taskType,
+		outputDimensionality: OUTPUT_DIMS
+	} as Parameters<typeof model.embedContent>[0]);
 	const values = result.embedding.values;
 
 	if (!values || values.length === 0) {
 		throw new Error('Gemini returned empty embedding');
 	}
 
-	return new Float32Array(values);
+	return normalize(values);
+}
+
+export async function embedForStorage(text: string): Promise<Float32Array> {
+	return embedText(text, TaskType.RETRIEVAL_DOCUMENT);
+}
+
+export async function embedForQuery(text: string): Promise<Float32Array> {
+	return embedText(text, TaskType.RETRIEVAL_QUERY);
 }
 
 export async function embedAndStoreChunks(
@@ -34,7 +62,7 @@ export async function embedAndStoreChunks(
 
 	for (const chunk of chunks) {
 		try {
-			const embedding = await embedText(chunk.content);
+			const embedding = await embedForStorage(chunk.content);
 
 			// Check for zero vector
 			const isZero = embedding.every((v) => v === 0);
@@ -53,11 +81,4 @@ export async function embedAndStoreChunks(
 	}
 
 	return { embedded, skipped };
-}
-
-export async function searchByText(
-	queryText: string,
-	limit = 10
-): Promise<Float32Array> {
-	return embedText(queryText);
 }
