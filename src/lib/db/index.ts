@@ -92,13 +92,13 @@ export function insertChunk(chunk: {
 	});
 }
 
-export function insertChunkEmbedding(chunkId: number, embedding: Float32Array) {
+export function insertChunkEmbedding(chunkId: number | bigint, embedding: Float32Array) {
 	const db = getDb();
 	const stmt = db.prepare(`
 		INSERT INTO vec_chunks (rowid, embedding)
 		VALUES (?, ?)
 	`);
-	return stmt.run(chunkId, embedding);
+	return stmt.run(Number(chunkId), Buffer.from(embedding.buffer));
 }
 
 export function searchSimilarChunks(embedding: Float32Array, limit = 10) {
@@ -111,7 +111,7 @@ export function searchSimilarChunks(embedding: Float32Array, limit = 10) {
 		ORDER BY distance
 		LIMIT ?
 	`);
-	return stmt.all(embedding, limit);
+	return stmt.all(Buffer.from(embedding.buffer), limit);
 }
 
 // ── Property helpers ──
