@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { ANTHROPIC_API_KEY } from '$env/static/private';
 import type { CopilotContext } from './context.js';
 
-const anthropic = new Anthropic();
+const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 export interface WriterResult {
 	text: string;

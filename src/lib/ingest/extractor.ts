@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { ANTHROPIC_API_KEY } from '$env/static/private';
 import {
 	findOrCreateProperty,
 	insertSale,
@@ -6,7 +7,7 @@ import {
 	linkDocumentProperty
 } from '$lib/db/index.js';
 
-const anthropic = new Anthropic();
+const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 export interface SaleCompExtraction {
 	property: {

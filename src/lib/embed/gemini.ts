@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, TaskType } from '@google/generative-ai';
+import { GEMINI_API_KEY } from '$env/static/private';
 import { insertChunkEmbedding } from '$lib/db/index.js';
 
 const MODEL = 'gemini-embedding-2-preview';
@@ -8,9 +9,7 @@ let genAI: GoogleGenerativeAI | null = null;
 
 function getClient(): GoogleGenerativeAI {
 	if (!genAI) {
-		const apiKey = process.env.GEMINI_API_KEY;
-		if (!apiKey) throw new Error('GEMINI_API_KEY environment variable is required');
-		genAI = new GoogleGenerativeAI(apiKey);
+		genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 	}
 	return genAI;
 }

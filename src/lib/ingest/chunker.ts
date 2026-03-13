@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import pdf from 'pdf-parse';
+import { ANTHROPIC_API_KEY } from '$env/static/private';
 
-const anthropic = new Anthropic();
+const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 export interface ClassifiedChunk {
 	chunk_type: 'clause' | 'exemplar' | 'evidence' | 'table';
