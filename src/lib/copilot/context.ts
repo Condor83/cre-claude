@@ -1,5 +1,6 @@
 import { getDb, getSections, getReportComps, searchSimilarChunks } from '$lib/db/index.js';
 import { embedForQuery } from '$lib/embed/gemini.js';
+import { SECTION_TYPE_MAP } from '$lib/config/sections.js';
 
 export interface CopilotContext {
 	subject: Record<string, unknown>;
@@ -20,20 +21,8 @@ const ADDENDUM_SECTIONS = new Set([
 	'addendum_other'
 ]);
 
-// Section types determine context shape
-const SECTION_TYPES: Record<string, 'boilerplate' | 'comp' | 'narrative'> = {
-	transmittal: 'boilerplate',
-	certification: 'boilerplate',
-	assumptions: 'boilerplate',
-	scope_of_work: 'boilerplate',
-	appraiser_qualifications: 'boilerplate',
-	neighborhood: 'narrative',
-	site_description: 'narrative',
-	improvement_description: 'narrative',
-	highest_best_use: 'narrative',
-	sales_comparison: 'comp',
-	income_approach: 'comp',
-	reconciliation: 'narrative',
+// Chunk-level labels that are NOT report sections but need type classification for copilot context
+const CHUNK_SECTION_TYPES: Record<string, 'boilerplate' | 'comp' | 'narrative'> = {
 	comp_sale_data: 'comp',
 	comp_lease_data: 'comp',
 	adjustment_grid: 'comp',
@@ -46,7 +35,7 @@ export async function assembleContext(
 	sectionKey: string
 ): Promise<CopilotContext> {
 	const db = getDb();
-	const sectionType = SECTION_TYPES[sectionKey] ?? 'narrative';
+	const sectionType = (SECTION_TYPE_MAP[sectionKey] ?? CHUNK_SECTION_TYPES[sectionKey] ?? 'narrative') as 'boilerplate' | 'comp' | 'narrative';
 
 	// Get subject property
 	const report = db

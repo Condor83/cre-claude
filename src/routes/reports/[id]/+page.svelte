@@ -3,41 +3,39 @@
 	import SectionNav from '$lib/components/SectionNav.svelte';
 	import CompSearch from '$lib/components/CompSearch.svelte';
 	import AdjustmentGrid from '$lib/components/AdjustmentGrid.svelte';
+	import { getSectionsForApproaches, SECTION_LABEL_MAP } from '$lib/config/sections.js';
 
 	let { data } = $props();
 
-	const SECTIONS = [
-		{ key: 'transmittal', label: 'Letter of Transmittal' },
-		{ key: 'certification', label: 'Certification' },
-		{ key: 'assumptions', label: 'Assumptions & Limiting Conditions' },
-		{ key: 'scope_of_work', label: 'Scope of Work' },
-		{ key: 'neighborhood', label: 'Neighborhood Description' },
-		{ key: 'site_description', label: 'Site Description' },
-		{ key: 'improvement_description', label: 'Improvement Description' },
-		{ key: 'highest_best_use', label: 'Highest & Best Use' },
-		{ key: 'sales_comparison', label: 'Sales Comparison Approach' },
-		{ key: 'income_approach', label: 'Income Capitalization Approach' },
-		{ key: 'reconciliation', label: 'Reconciliation' },
-		{ key: 'appraiser_qualifications', label: 'Appraiser Qualifications' }
-	];
+	function parseApproaches(approach: string): string[] {
+		try { return JSON.parse(approach); }
+		catch { return ['sales_comparison', 'income_cap']; }
+	}
+
+	const approaches = $derived(parseApproaches(data.report.approach));
+	const SECTIONS = $derived(getSectionsForApproaches(approaches).map(s => ({ key: s.key, label: s.label })));
 
 	let activeSection = $state('transmittal');
 	let showCompSearch = $state(false);
 	let generating = $state(false);
 	let autosaveTimer = $state<ReturnType<typeof setInterval> | null>(null);
 
-	// Get initial content for active section
-	function getInitialContent(sectionKey: string): string {
-		const section = data.sections.find((s: { section_key: string }) => s.section_key === sectionKey);
-		return section?.content_json ?? '';
+	// Local content cache — survives section switches without re-querying server
+	function buildInitialCache() {
+		return Object.fromEntries(data.sections.map((s: { section_key: string; content_json: string; content_html: string }) =>
+			[s.section_key, { json: s.content_json, html: s.content_html }]
+		));
 	}
+	let contentCache = $state<Record<string, { json: string; html: string }>>(buildInitialCache());
 
 	function getInitialHtml(sectionKey: string): string {
-		const section = data.sections.find((s: { section_key: string }) => s.section_key === sectionKey);
-		return section?.content_html ?? '';
+		return contentCache[sectionKey]?.html ?? '';
 	}
 
 	async function saveSection(sectionKey: string, contentJson: string, contentHtml: string) {
+		// Update local cache immediately
+		contentCache[sectionKey] = { json: contentJson, html: contentHtml };
+
 		await fetch(`/reports/${data.report.id}`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
@@ -102,7 +100,7 @@
 		<SectionNav
 			sections={SECTIONS}
 			{activeSection}
-			completedSections={data.sections.map((s: { section_key: string }) => s.section_key)}
+			completedSections={Object.keys(contentCache)}
 			onselect={(key) => activeSection = key}
 		/>
 		<div class="sidebar-actions">
