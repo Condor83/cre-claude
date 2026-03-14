@@ -1,6 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createReport, findOrCreateProperty, listReports } from '$lib/db/index.js';
+import { createReport, findOrCreateProperty, listReports, saveSectionAutoContent } from '$lib/db/index.js';
+import { buildTemplateContext } from '$lib/templates/context.js';
+import { AUTO_TEMPLATES } from '$lib/templates/sections/index.js';
+import { getSectionsForApproaches, type SectionDef } from '$lib/config/sections.js';
 
 const VALID_APPROACHES = ['sales_comparison', 'income_cap', 'cost'];
 
@@ -104,7 +107,25 @@ export const POST: RequestHandler = async ({ request }) => {
 			property_rights: property_rights || undefined
 		});
 
-		return json({ id: Number(result.lastInsertRowid) });
+		const reportId = Number(result.lastInsertRowid);
+
+		// Pre-populate AUTO sections
+		try {
+			const ctx = buildTemplateContext(reportId);
+			if (ctx) {
+				const activeSections = getSectionsForApproaches(approaches) as SectionDef[];
+				for (const section of activeSections) {
+					if (section.tier === 'auto' && AUTO_TEMPLATES[section.key]) {
+						const html = AUTO_TEMPLATES[section.key](ctx);
+						saveSectionAutoContent(reportId, section.key, html);
+					}
+				}
+			}
+		} catch (err) {
+			console.error('[reports POST] AUTO pre-population failed (non-fatal):', err);
+		}
+
+		return json({ id: reportId });
 	} catch (err) {
 		console.error('[reports POST]', err);
 		return json({ error: 'Failed to create report' }, { status: 500 });

@@ -247,6 +247,22 @@ function migrateWizardSchema(db: Database.Database): void {
 	console.log('[wizard-migration] Complete');
 }
 
+// ── Schema migration: add status + form_data to report_sections ──
+
+function migrateReportSectionsColumns(db: Database.Database): void {
+	const cols = db.prepare("PRAGMA table_info(report_sections)").all() as Array<{ name: string }>;
+	const hasStatus = cols.some(c => c.name === 'status');
+	if (hasStatus) return;
+
+	console.log('[sections-migration] Adding status + form_data columns to report_sections...');
+	db.exec(`ALTER TABLE report_sections ADD COLUMN status TEXT DEFAULT 'empty'`);
+	db.exec(`ALTER TABLE report_sections ADD COLUMN form_data TEXT`);
+
+	// Backfill: any section with content is 'in_progress'
+	db.exec(`UPDATE report_sections SET status = 'in_progress' WHERE content_html IS NOT NULL AND content_html != ''`);
+	console.log('[sections-migration] Complete');
+}
+
 export function getDb(): Database.Database {
 	if (_db) return _db;
 
@@ -280,6 +296,9 @@ export function getDb(): Database.Database {
 
 	// Migrate to wizard schema (new columns on properties + reports)
 	migrateWizardSchema(_db);
+
+	// Migrate report_sections (status + form_data columns)
+	migrateReportSectionsColumns(_db);
 
 	// Re-run schema to ensure all indexes exist (idempotent after migration)
 	_db.exec(schema);
@@ -774,17 +793,59 @@ export function listReports() {
 		.all();
 }
 
-export function saveSection(reportId: number, sectionKey: string, contentJson: string, contentHtml: string) {
+export function saveSection(
+	reportId: number,
+	sectionKey: string,
+	contentJson: string,
+	contentHtml: string,
+	status?: string,
+	formData?: string
+) {
 	const db = getDb();
 	const stmt = db.prepare(`
-		INSERT INTO report_sections (report_id, section_key, content_json, content_html, last_saved)
-		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO report_sections (report_id, section_key, content_json, content_html, status, form_data, last_saved)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(report_id, section_key) DO UPDATE SET
 			content_json = excluded.content_json,
 			content_html = excluded.content_html,
+			status = COALESCE(excluded.status, report_sections.status),
+			form_data = COALESCE(excluded.form_data, report_sections.form_data),
 			last_saved = CURRENT_TIMESTAMP
 	`);
-	return stmt.run(reportId, sectionKey, contentJson, contentHtml);
+	return stmt.run(reportId, sectionKey, contentJson, contentHtml, status ?? null, formData ?? null);
+}
+
+export function saveSectionAutoContent(
+	reportId: number,
+	sectionKey: string,
+	contentHtml: string
+) {
+	const db = getDb();
+	// Guard: skip if section already has non-empty status (don't overwrite edits)
+	const existing = db.prepare(
+		`SELECT status FROM report_sections WHERE report_id = ? AND section_key = ?`
+	).get(reportId, sectionKey) as { status: string } | undefined;
+
+	if (existing && existing.status !== 'empty' && existing.status !== 'auto_generated') {
+		return; // Don't overwrite user edits
+	}
+
+	const stmt = db.prepare(`
+		INSERT INTO report_sections (report_id, section_key, content_json, content_html, status, last_saved)
+		VALUES (?, ?, NULL, ?, 'auto_generated', CURRENT_TIMESTAMP)
+		ON CONFLICT(report_id, section_key) DO UPDATE SET
+			content_html = excluded.content_html,
+			status = 'auto_generated',
+			last_saved = CURRENT_TIMESTAMP
+	`);
+	return stmt.run(reportId, sectionKey, contentHtml);
+}
+
+export function updateSectionStatus(reportId: number, sectionKey: string, status: string) {
+	const db = getDb();
+	db.prepare(
+		`UPDATE report_sections SET status = ?, last_saved = CURRENT_TIMESTAMP WHERE report_id = ? AND section_key = ?`
+	).run(status, reportId, sectionKey);
 }
 
 export function getSections(reportId: number) {
@@ -846,4 +907,160 @@ export function getReportComps(reportId: number) {
 	`
 		)
 		.all(reportId);
+}
+
+// ── Shared property context (used by templates + copilot) ──
+
+export interface PropertyContext {
+	// Report fields
+	report_id: number;
+	report_number: string | null;
+	approach: string;
+	effective_date: string | null;
+	client_name: string | null;
+	intended_use: string | null;
+	property_rights: string | null;
+	report_date: string;
+	report_status: string;
+	// Property fields
+	property_id: number;
+	address: string;
+	city: string | null;
+	state: string;
+	zip: string | null;
+	apn: string | null;
+	county: string | null;
+	property_type: string | null;
+	year_built: number | null;
+	building_sf: number | null;
+	land_sf: number | null;
+	land_acres: number | null;
+	stories: number | null;
+	construction_class: string | null;
+	quality: string | null;
+	condition: string | null;
+	zoning: string | null;
+	market_value: number | null;
+	county_data_json: string | null;
+	owner_name: string | null;
+	acquisition_date: string | null;
+	occupancy: string | null;
+	latitude: number | null;
+	longitude: number | null;
+	// Derived calcs
+	building_to_land_ratio: number | null;
+	effective_age: number | null;
+	land_sf_from_acres: number | null;
+}
+
+export function getPropertyContext(reportId: number): PropertyContext | null {
+	const db = getDb();
+	const row = db.prepare(`
+		SELECT
+			r.id as report_id, r.report_number, r.approach, r.effective_date,
+			r.client_name, r.intended_use, r.property_rights, r.status as report_status,
+			r.created_at as report_date,
+			p.id as property_id, p.address, p.city, p.state, p.zip, p.apn,
+			p.county, p.property_type, p.year_built, p.building_sf, p.land_sf,
+			p.land_acres, p.stories, p.construction_class, p.quality, p.condition,
+			p.zoning, p.market_value, p.county_data_json, p.owner_name,
+			p.acquisition_date, p.occupancy, p.latitude, p.longitude
+		FROM reports r
+		JOIN properties p ON p.id = r.subject_property_id
+		WHERE r.id = ?
+	`).get(reportId) as Record<string, unknown> | undefined;
+
+	if (!row) return null;
+
+	const buildingSf = row.building_sf as number | null;
+	const landSf = row.land_sf as number | null;
+	const landAcres = row.land_acres as number | null;
+	const yearBuilt = row.year_built as number | null;
+	const effectiveDate = row.effective_date as string | null;
+
+	// Derived calculations
+	const landSfFromAcres = landAcres && !landSf ? landAcres * 43560 : null;
+	const effectiveLandSf = landSf ?? landSfFromAcres;
+	const buildingToLandRatio = buildingSf && effectiveLandSf
+		? Math.round((buildingSf / effectiveLandSf) * 100) / 100
+		: null;
+	const currentYear = effectiveDate ? new Date(effectiveDate).getFullYear() : new Date().getFullYear();
+	const effectiveAge = yearBuilt ? currentYear - yearBuilt : null;
+
+	return {
+		...(row as unknown as PropertyContext),
+		building_to_land_ratio: buildingToLandRatio,
+		effective_age: effectiveAge,
+		land_sf_from_acres: landSfFromAcres
+	};
+}
+
+// ── Appraiser settings helpers ──
+
+export function getAppraiserSetting(key: string): string | null {
+	const db = getDb();
+	const row = db.prepare('SELECT value FROM appraiser_settings WHERE key = ?').get(key) as { value: string } | undefined;
+	return row?.value ?? null;
+}
+
+export function getAllAppraiserSettings(): Record<string, string> {
+	const db = getDb();
+	const rows = db.prepare('SELECT key, value FROM appraiser_settings').all() as Array<{ key: string; value: string }>;
+	return Object.fromEntries(rows.map(r => [r.key, r.value]));
+}
+
+export function setAppraiserSetting(key: string, value: string): void {
+	const db = getDb();
+	db.prepare(
+		`INSERT INTO appraiser_settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+	).run(key, value);
+}
+
+export function setAppraiserSettings(settings: Record<string, string>): void {
+	const db = getDb();
+	const stmt = db.prepare(
+		`INSERT INTO appraiser_settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+	);
+	const batch = db.transaction(() => {
+		for (const [key, value] of Object.entries(settings)) {
+			stmt.run(key, value);
+		}
+	});
+	batch();
+}
+
+// ── Market data helpers ──
+
+export function getMarketData(marketArea: string, dataType?: string) {
+	const db = getDb();
+	if (dataType) {
+		return db.prepare(
+			'SELECT * FROM market_data WHERE market_area = ? AND data_type = ? ORDER BY year DESC'
+		).all(marketArea, dataType);
+	}
+	return db.prepare(
+		'SELECT * FROM market_data WHERE market_area = ? ORDER BY data_type, year DESC'
+	).all(marketArea);
+}
+
+export function upsertMarketData(data: {
+	market_area: string;
+	data_type: string;
+	data_json: string;
+	year?: number;
+	source?: string;
+}) {
+	const db = getDb();
+	return db.prepare(`
+		INSERT INTO market_data (market_area, data_type, data_json, year, source, updated_at)
+		VALUES (@market_area, @data_type, @data_json, @year, @source, CURRENT_TIMESTAMP)
+	`).run({
+		market_area: data.market_area,
+		data_type: data.data_type,
+		data_json: data.data_json,
+		year: data.year ?? null,
+		source: data.source ?? null
+	});
 }

@@ -71,6 +71,14 @@
 				if (result.found && result.data) {
 					const fields = result.data;
 					const filled = new SvelteSet<string>();
+					if (fields.address && !address) {
+						address = fields.address;
+						filled.add('address');
+					}
+					if (fields.city && !city) {
+						city = fields.city;
+						filled.add('city');
+					}
 					if (fields.apn && !apn) {
 						apn = fields.apn;
 						filled.add('apn');

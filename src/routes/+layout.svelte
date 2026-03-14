@@ -11,6 +11,7 @@
 			<li><a href="/">Dashboard</a></li>
 			<li><a href="/properties">Properties</a></li>
 			<li><a href="/reports/new">New Report</a></li>
+			<li><a href="/settings">Settings</a></li>
 		</ul>
 	</nav>
 	<main class="content">
