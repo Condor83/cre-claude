@@ -11,6 +11,11 @@ const SCHEMA_PATH = join(PROJECT_ROOT, 'src', 'lib', 'db', 'schema.sql');
 
 let _db: Database.Database | null = null;
 
+/** Allow tests to inject an in-memory database */
+export function _setDbForTesting(db: Database.Database): void {
+	_db = db;
+}
+
 // ── Content hashing for deduplication ──
 // STABLE API: changing normalization invalidates all stored hashes.
 // Do not modify without re-hashing all chunks.
@@ -165,6 +170,83 @@ function migrateChunksDedup(db: Database.Database): void {
 	}
 }
 
+// ── Schema migration: add wizard columns to properties + reports ──
+
+function migrateWizardSchema(db: Database.Database): void {
+	// Check if properties already has 'county' column
+	const propCols = db.prepare("PRAGMA table_info(properties)").all() as Array<{ name: string }>;
+	const hasCounty = propCols.some(c => c.name === 'county');
+
+	// Check if reports has old CHECK constraint (approach column with CHECK)
+	const reportCols = db.prepare("PRAGMA table_info(reports)").all() as Array<{ name: string }>;
+	const hasClientName = reportCols.some(c => c.name === 'client_name');
+
+	const hasMarketValue = propCols.some(c => c.name === 'market_value');
+	const hasCountyDataJson = propCols.some(c => c.name === 'county_data_json');
+
+	if (hasCounty && hasClientName && hasMarketValue && hasCountyDataJson) return; // Already migrated
+
+	console.log('[wizard-migration] Adding wizard columns...');
+
+	db.pragma('foreign_keys = OFF');
+
+	const migrate = db.transaction(() => {
+		// Add new columns to properties (if missing)
+		if (!hasCounty) {
+			db.exec(`ALTER TABLE properties ADD COLUMN county TEXT`);
+			db.exec(`ALTER TABLE properties ADD COLUMN owner_name TEXT`);
+			db.exec(`ALTER TABLE properties ADD COLUMN acquisition_date TEXT`);
+			db.exec(`ALTER TABLE properties ADD COLUMN occupancy TEXT`);
+		}
+		if (!hasMarketValue) {
+			db.exec(`ALTER TABLE properties ADD COLUMN market_value REAL`);
+		}
+		if (!hasCountyDataJson) {
+			db.exec(`ALTER TABLE properties ADD COLUMN county_data_json TEXT`);
+		}
+
+		// Rebuild reports table to drop CHECK constraint and add new columns
+		if (!hasClientName) {
+			db.exec(`
+				CREATE TABLE reports_new (
+					id INTEGER PRIMARY KEY,
+					report_number TEXT,
+					subject_property_id INTEGER REFERENCES properties(id),
+					approach TEXT,
+					effective_date TEXT,
+					client_name TEXT,
+					intended_use TEXT DEFAULT 'estimate market value',
+					property_rights TEXT DEFAULT 'fee simple',
+					status TEXT DEFAULT 'draft' CHECK(status IN ('draft', 'review', 'final')),
+					created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+					updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+				);
+
+				INSERT INTO reports_new (id, report_number, subject_property_id, approach, effective_date, status, created_at, updated_at)
+				SELECT id, report_number, subject_property_id, approach, effective_date, status, created_at, updated_at FROM reports;
+			`);
+
+			// Migrate approach values to JSON array format
+			db.exec(`
+				UPDATE reports_new SET approach = '["sales_comparison","income_cap"]' WHERE approach = 'both';
+				UPDATE reports_new SET approach = '["sales_comparison"]' WHERE approach = 'sales_comparison';
+				UPDATE reports_new SET approach = '["income_cap"]' WHERE approach = 'income_cap';
+			`);
+
+			db.exec(`DROP TABLE reports`);
+			db.exec(`ALTER TABLE reports_new RENAME TO reports`);
+		}
+	});
+
+	try {
+		migrate();
+	} finally {
+		db.pragma('foreign_keys = ON');
+	}
+
+	console.log('[wizard-migration] Complete');
+}
+
 export function getDb(): Database.Database {
 	if (_db) return _db;
 
@@ -195,6 +277,9 @@ export function getDb(): Database.Database {
 
 	// Migrate old chunks schema to deduplicated schema if needed
 	migrateChunksDedup(_db);
+
+	// Migrate to wizard schema (new columns on properties + reports)
+	migrateWizardSchema(_db);
 
 	// Re-run schema to ensure all indexes exist (idempotent after migration)
 	_db.exec(schema);
@@ -342,23 +427,75 @@ export function findOrCreateProperty(property: {
 	zoning?: string;
 	latitude?: number;
 	longitude?: number;
+	county?: string;
+	owner_name?: string;
+	acquisition_date?: string;
+	occupancy?: string;
+	market_value?: number;
+	county_data_json?: string;
 }): number {
 	const db = getDb();
 	const normalized = normalizeAddress(property.address);
 
 	// Try APN dedup first
+	let existingId: number | undefined;
 	if (property.apn) {
 		const existing = db.prepare('SELECT id FROM properties WHERE apn = ?').get(property.apn) as
 			| { id: number }
 			| undefined;
-		if (existing) return existing.id;
+		if (existing) existingId = existing.id;
 	}
 
 	// Try normalized address dedup
-	const existingByAddr = db
-		.prepare('SELECT id FROM properties WHERE address_normalized = ? AND city = ?')
-		.get(normalized, property.city ?? null) as { id: number } | undefined;
-	if (existingByAddr) return existingByAddr.id;
+	if (!existingId) {
+		const existingByAddr = db
+			.prepare('SELECT id FROM properties WHERE address_normalized = ? AND city = ?')
+			.get(normalized, property.city ?? null) as { id: number } | undefined;
+		if (existingByAddr) existingId = existingByAddr.id;
+	}
+
+	// Upsert: update existing property with wizard-submitted values
+	if (existingId) {
+		db.prepare(`
+			UPDATE properties SET
+				address = @address, address_normalized = @address_normalized,
+				city = @city, state = @state, zip = @zip, apn = @apn,
+				property_type = @property_type, year_built = @year_built,
+				building_sf = @building_sf, land_sf = @land_sf, land_acres = @land_acres,
+				stories = @stories, construction_class = @construction_class,
+				quality = @quality, condition = @condition, zoning = @zoning,
+				market_value = @market_value, county_data_json = @county_data_json,
+				county = @county, owner_name = @owner_name,
+				acquisition_date = @acquisition_date, occupancy = @occupancy,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = @id
+		`).run({
+			id: existingId,
+			address: property.address,
+			address_normalized: normalized,
+			city: property.city ?? null,
+			state: property.state ?? 'UT',
+			zip: property.zip ?? null,
+			apn: property.apn ?? null,
+			property_type: property.property_type ?? null,
+			year_built: property.year_built ?? null,
+			building_sf: property.building_sf ?? null,
+			land_sf: property.land_sf ?? null,
+			land_acres: property.land_acres ?? null,
+			stories: property.stories ?? null,
+			construction_class: property.construction_class ?? null,
+			quality: property.quality ?? null,
+			condition: property.condition ?? null,
+			zoning: property.zoning ?? null,
+			market_value: property.market_value ?? null,
+			county_data_json: property.county_data_json ?? null,
+			county: property.county ?? null,
+			owner_name: property.owner_name ?? null,
+			acquisition_date: property.acquisition_date ?? null,
+			occupancy: property.occupancy ?? null
+		});
+		return existingId;
+	}
 
 	// Insert new property
 	const stmt = db.prepare(`
@@ -366,12 +503,12 @@ export function findOrCreateProperty(property: {
 			address, address_normalized, city, state, zip, apn,
 			property_type, year_built, building_sf, land_sf, land_acres,
 			stories, construction_class, quality, condition, zoning,
-			latitude, longitude
+			market_value, county_data_json, latitude, longitude, county, owner_name, acquisition_date, occupancy
 		) VALUES (
 			@address, @address_normalized, @city, @state, @zip, @apn,
 			@property_type, @year_built, @building_sf, @land_sf, @land_acres,
 			@stories, @construction_class, @quality, @condition, @zoning,
-			@latitude, @longitude
+			@market_value, @county_data_json, @latitude, @longitude, @county, @owner_name, @acquisition_date, @occupancy
 		)
 	`);
 
@@ -392,8 +529,14 @@ export function findOrCreateProperty(property: {
 		quality: property.quality ?? null,
 		condition: property.condition ?? null,
 		zoning: property.zoning ?? null,
+		market_value: property.market_value ?? null,
+		county_data_json: property.county_data_json ?? null,
 		latitude: property.latitude ?? null,
-		longitude: property.longitude ?? null
+		longitude: property.longitude ?? null,
+		county: property.county ?? null,
+		owner_name: property.owner_name ?? null,
+		acquisition_date: property.acquisition_date ?? null,
+		occupancy: property.occupancy ?? null
 	});
 
 	return Number(result.lastInsertRowid);
@@ -581,17 +724,23 @@ export function createReport(report: {
 	subject_property_id: number;
 	approach: string;
 	effective_date?: string;
+	client_name?: string;
+	intended_use?: string;
+	property_rights?: string;
 }) {
 	const db = getDb();
 	const stmt = db.prepare(`
-		INSERT INTO reports (report_number, subject_property_id, approach, effective_date)
-		VALUES (@report_number, @subject_property_id, @approach, @effective_date)
+		INSERT INTO reports (report_number, subject_property_id, approach, effective_date, client_name, intended_use, property_rights)
+		VALUES (@report_number, @subject_property_id, @approach, @effective_date, @client_name, @intended_use, @property_rights)
 	`);
 	return stmt.run({
 		report_number: report.report_number ?? null,
 		subject_property_id: report.subject_property_id,
 		approach: report.approach,
-		effective_date: report.effective_date ?? null
+		effective_date: report.effective_date ?? null,
+		client_name: report.client_name ?? null,
+		intended_use: report.intended_use ?? 'estimate market value',
+		property_rights: report.property_rights ?? 'fee simple'
 	});
 }
 
@@ -600,7 +749,9 @@ export function getReport(id: number) {
 	return db
 		.prepare(
 			`
-		SELECT r.*, p.address as subject_address, p.city as subject_city
+		SELECT r.*, p.address as subject_address, p.city as subject_city,
+			p.property_type as subject_property_type, p.building_sf as subject_building_sf,
+			p.year_built as subject_year_built
 		FROM reports r
 		JOIN properties p ON p.id = r.subject_property_id
 		WHERE r.id = ?
