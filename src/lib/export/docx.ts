@@ -12,6 +12,7 @@ import {
 	WidthType
 } from 'docx';
 import { getDb, getSections, getReportComps } from '$lib/db/index.js';
+import { getSectionsForApproaches, SECTION_LABEL_MAP } from '$lib/config/sections.js';
 
 interface ReportData {
 	id: number;
@@ -22,36 +23,10 @@ interface ReportData {
 	approach: string;
 }
 
-// Section ordering for the report
-const SECTION_ORDER = [
-	'transmittal',
-	'certification',
-	'assumptions',
-	'scope_of_work',
-	'neighborhood',
-	'site_description',
-	'improvement_description',
-	'highest_best_use',
-	'sales_comparison',
-	'income_approach',
-	'reconciliation',
-	'appraiser_qualifications'
-];
-
-const SECTION_TITLES: Record<string, string> = {
-	transmittal: 'Letter of Transmittal',
-	certification: 'Certification',
-	assumptions: 'Assumptions and Limiting Conditions',
-	scope_of_work: 'Scope of Work',
-	neighborhood: 'Neighborhood Description',
-	site_description: 'Site Description',
-	improvement_description: 'Improvement Description',
-	highest_best_use: 'Highest and Best Use Analysis',
-	sales_comparison: 'Sales Comparison Approach',
-	income_approach: 'Income Capitalization Approach',
-	reconciliation: 'Reconciliation and Final Value Estimate',
-	appraiser_qualifications: 'Appraiser Qualifications'
-};
+function parseApproaches(approach: string): string[] {
+	try { return JSON.parse(approach); }
+	catch { return ['sales_comparison', 'income_cap']; }
+}
 
 function htmlToDocxParagraphs(html: string): Paragraph[] {
 	if (!html) return [new Paragraph({ children: [new TextRun('')] })];
@@ -242,10 +217,14 @@ export async function generateDocx(reportId: number): Promise<Buffer> {
 		})
 	);
 
-	// Report sections
-	for (const key of SECTION_ORDER) {
+	// Report sections — filtered by approach
+	const approaches = parseApproaches(report.approach);
+	const activeSections = getSectionsForApproaches(approaches);
+
+	for (const sectionDef of activeSections) {
+		const key = sectionDef.key;
 		const section = sectionMap.get(key);
-		const title = SECTION_TITLES[key] || key;
+		const title = SECTION_LABEL_MAP[key] || key;
 
 		docSections.push(
 			new Paragraph({

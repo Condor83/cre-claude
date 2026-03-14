@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import { createHash } from 'crypto';
 import { readFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
@@ -9,6 +10,242 @@ const DATA_DIR = join(PROJECT_ROOT, 'data');
 const SCHEMA_PATH = join(PROJECT_ROOT, 'src', 'lib', 'db', 'schema.sql');
 
 let _db: Database.Database | null = null;
+
+/** Allow tests to inject an in-memory database */
+export function _setDbForTesting(db: Database.Database): void {
+	_db = db;
+}
+
+// ── Content hashing for deduplication ──
+// STABLE API: changing normalization invalidates all stored hashes.
+// Do not modify without re-hashing all chunks.
+
+function normalizeContent(content: string): string {
+	if (!content) return '';
+	return content
+		.replace(/\r\n/g, '\n')
+		.replace(/\t/g, ' ')
+		.replace(/ {2,}/g, ' ')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
+}
+
+function contentHash(content: string): string {
+	return createHash('sha256').update(normalizeContent(content)).digest('hex');
+}
+
+// ── Schema migration: old chunks (with document_id) → deduplicated chunks + document_chunks junction ──
+
+function migrateChunksDedup(db: Database.Database): void {
+	// Detect old schema: chunks table has document_id column
+	const cols = db.prepare("PRAGMA table_info(chunks)").all() as Array<{ name: string }>;
+	const hasDocumentId = cols.some(c => c.name === 'document_id');
+	if (!hasDocumentId) return; // Already migrated or fresh DB
+
+	console.log('[dedup-migration] Detected old chunks schema, migrating...');
+
+	// Disable foreign keys during migration to prevent CASCADE on DROP TABLE
+	db.pragma('foreign_keys = OFF');
+
+	const migrate = db.transaction(() => {
+		// 1. Create document_chunks junction table
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS document_chunks (
+				id INTEGER PRIMARY KEY,
+				document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+				chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+				page_start INTEGER,
+				page_end INTEGER,
+				UNIQUE(document_id, chunk_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_dc_document ON document_chunks(document_id);
+			CREATE INDEX IF NOT EXISTS idx_dc_chunk ON document_chunks(chunk_id);
+		`);
+
+		// 2. Populate junction from existing chunks
+		db.exec(`
+			INSERT OR IGNORE INTO document_chunks (document_id, chunk_id, page_start, page_end)
+			SELECT document_id, id, page_start, page_end FROM chunks
+		`);
+
+		// 3. Create new chunks table with content_hash, without document_id
+		db.exec(`
+			CREATE TABLE chunks_new (
+				id INTEGER PRIMARY KEY,
+				content_hash TEXT NOT NULL,
+				chunk_type TEXT NOT NULL CHECK(chunk_type IN ('clause', 'exemplar', 'evidence', 'table')),
+				section_label TEXT,
+				content TEXT NOT NULL,
+				confidence REAL DEFAULT 1.0
+			);
+		`);
+
+		// 4. Deduplicate: for each chunk, compute hash and handle duplicates
+		const allChunks = db.prepare('SELECT id, chunk_type, section_label, content, confidence FROM chunks ORDER BY id').all() as Array<{
+			id: number; chunk_type: string; section_label: string | null; content: string; confidence: number;
+		}>;
+
+		const hashToCanonicalId = new Map<string, number>();
+		const oldToCanonicalId = new Map<number, number>(); // maps old duplicate IDs to canonical IDs
+		const insertNew = db.prepare('INSERT INTO chunks_new (id, content_hash, chunk_type, section_label, content, confidence) VALUES (?, ?, ?, ?, ?, ?)');
+		const updateConfidence = db.prepare('UPDATE chunks_new SET confidence = ? WHERE id = ?');
+
+		for (const chunk of allChunks) {
+			const hash = contentHash(chunk.content);
+			const existing = hashToCanonicalId.get(hash);
+
+			if (existing !== undefined) {
+				// Duplicate — record mapping for repointing
+				oldToCanonicalId.set(chunk.id, existing);
+				// Keep highest confidence
+				const currentConf = (db.prepare('SELECT confidence FROM chunks_new WHERE id = ?').get(existing) as { confidence: number })?.confidence ?? 0;
+				if (chunk.confidence > currentConf) {
+					updateConfidence.run(chunk.confidence, existing);
+				}
+			} else {
+				// New canonical chunk
+				insertNew.run(chunk.id, hash, chunk.chunk_type, chunk.section_label, chunk.content, chunk.confidence);
+				hashToCanonicalId.set(hash, chunk.id);
+			}
+		}
+
+		// 5. Repoint document_chunks links for duplicates
+		const checkLink = db.prepare('SELECT 1 FROM document_chunks WHERE document_id = ? AND chunk_id = ?');
+		const updateLink = db.prepare('UPDATE document_chunks SET chunk_id = ? WHERE document_id = ? AND chunk_id = ?');
+		const deleteLink = db.prepare('DELETE FROM document_chunks WHERE document_id = ? AND chunk_id = ?');
+
+		for (const [oldId, canonicalId] of oldToCanonicalId) {
+			// Get all document_chunks rows pointing to the old duplicate chunk
+			const links = db.prepare('SELECT document_id FROM document_chunks WHERE chunk_id = ?').all(oldId) as Array<{ document_id: number }>;
+			for (const link of links) {
+				// Check if this document already has a link to the canonical chunk
+				const alreadyLinked = checkLink.get(link.document_id, canonicalId);
+				if (alreadyLinked) {
+					// Same-doc collision — content already represented, delete old link
+					deleteLink.run(link.document_id, oldId);
+				} else {
+					// Repoint to canonical
+					updateLink.run(canonicalId, link.document_id, oldId);
+				}
+			}
+		}
+
+		// 6. Clean up orphaned document_chunks (pointing to chunks not in chunks_new)
+		db.exec(`
+			DELETE FROM document_chunks
+			WHERE chunk_id NOT IN (SELECT id FROM chunks_new)
+		`);
+
+		// 7. Delete vec_chunks entries for removed duplicate chunk IDs
+		const duplicateIds = [...oldToCanonicalId.keys()];
+		if (duplicateIds.length > 0) {
+			const deleteVec = db.prepare('DELETE FROM vec_chunks WHERE rowid = ?');
+			for (const id of duplicateIds) {
+				deleteVec.run(id);
+			}
+		}
+
+		// 8. Swap tables
+		db.exec('DROP TABLE chunks');
+		db.exec('ALTER TABLE chunks_new RENAME TO chunks');
+
+		// 9. Recreate indexes
+		db.exec(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash);
+			CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(chunk_type);
+			CREATE INDEX IF NOT EXISTS idx_chunks_section ON chunks(section_label);
+		`);
+
+		const totalOld = allChunks.length;
+		const totalNew = hashToCanonicalId.size;
+		const dupes = totalOld - totalNew;
+		const ratio = totalOld > 0 ? (dupes / totalOld * 100).toFixed(1) : '0.0';
+		console.log(`[dedup-migration] Complete: ${totalOld} chunks → ${totalNew} canonical (${dupes} duplicates removed, ratio ${ratio}%)`);
+	});
+
+	try {
+		migrate();
+	} finally {
+		db.pragma('foreign_keys = ON');
+	}
+}
+
+// ── Schema migration: add wizard columns to properties + reports ──
+
+function migrateWizardSchema(db: Database.Database): void {
+	// Check if properties already has 'county' column
+	const propCols = db.prepare("PRAGMA table_info(properties)").all() as Array<{ name: string }>;
+	const hasCounty = propCols.some(c => c.name === 'county');
+
+	// Check if reports has old CHECK constraint (approach column with CHECK)
+	const reportCols = db.prepare("PRAGMA table_info(reports)").all() as Array<{ name: string }>;
+	const hasClientName = reportCols.some(c => c.name === 'client_name');
+
+	const hasMarketValue = propCols.some(c => c.name === 'market_value');
+	const hasCountyDataJson = propCols.some(c => c.name === 'county_data_json');
+
+	if (hasCounty && hasClientName && hasMarketValue && hasCountyDataJson) return; // Already migrated
+
+	console.log('[wizard-migration] Adding wizard columns...');
+
+	db.pragma('foreign_keys = OFF');
+
+	const migrate = db.transaction(() => {
+		// Add new columns to properties (if missing)
+		if (!hasCounty) {
+			db.exec(`ALTER TABLE properties ADD COLUMN county TEXT`);
+			db.exec(`ALTER TABLE properties ADD COLUMN owner_name TEXT`);
+			db.exec(`ALTER TABLE properties ADD COLUMN acquisition_date TEXT`);
+			db.exec(`ALTER TABLE properties ADD COLUMN occupancy TEXT`);
+		}
+		if (!hasMarketValue) {
+			db.exec(`ALTER TABLE properties ADD COLUMN market_value REAL`);
+		}
+		if (!hasCountyDataJson) {
+			db.exec(`ALTER TABLE properties ADD COLUMN county_data_json TEXT`);
+		}
+
+		// Rebuild reports table to drop CHECK constraint and add new columns
+		if (!hasClientName) {
+			db.exec(`
+				CREATE TABLE reports_new (
+					id INTEGER PRIMARY KEY,
+					report_number TEXT,
+					subject_property_id INTEGER REFERENCES properties(id),
+					approach TEXT,
+					effective_date TEXT,
+					client_name TEXT,
+					intended_use TEXT DEFAULT 'estimate market value',
+					property_rights TEXT DEFAULT 'fee simple',
+					status TEXT DEFAULT 'draft' CHECK(status IN ('draft', 'review', 'final')),
+					created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+					updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+				);
+
+				INSERT INTO reports_new (id, report_number, subject_property_id, approach, effective_date, status, created_at, updated_at)
+				SELECT id, report_number, subject_property_id, approach, effective_date, status, created_at, updated_at FROM reports;
+			`);
+
+			// Migrate approach values to JSON array format
+			db.exec(`
+				UPDATE reports_new SET approach = '["sales_comparison","income_cap"]' WHERE approach = 'both';
+				UPDATE reports_new SET approach = '["sales_comparison"]' WHERE approach = 'sales_comparison';
+				UPDATE reports_new SET approach = '["income_cap"]' WHERE approach = 'income_cap';
+			`);
+
+			db.exec(`DROP TABLE reports`);
+			db.exec(`ALTER TABLE reports_new RENAME TO reports`);
+		}
+	});
+
+	try {
+		migrate();
+	} finally {
+		db.pragma('foreign_keys = ON');
+	}
+
+	console.log('[wizard-migration] Complete');
+}
 
 export function getDb(): Database.Database {
 	if (_db) return _db;
@@ -23,9 +260,13 @@ export function getDb(): Database.Database {
 	// Load sqlite-vec extension
 	sqliteVec.load(_db);
 
-	// Run schema migrations
+	// Run schema — may partially fail on old DBs where chunks lacks content_hash
 	const schema = readFileSync(SCHEMA_PATH, 'utf-8');
-	_db.exec(schema);
+	try {
+		_db.exec(schema);
+	} catch {
+		// Expected on old DBs before migration — will re-run after
+	}
 
 	// Create vec_chunks virtual table if not exists
 	_db.exec(`
@@ -33,6 +274,15 @@ export function getDb(): Database.Database {
 			embedding float[768]
 		);
 	`);
+
+	// Migrate old chunks schema to deduplicated schema if needed
+	migrateChunksDedup(_db);
+
+	// Migrate to wizard schema (new columns on properties + reports)
+	migrateWizardSchema(_db);
+
+	// Re-run schema to ensure all indexes exist (idempotent after migration)
+	_db.exec(schema);
 
 	return _db;
 }
@@ -69,7 +319,7 @@ export function listDocuments() {
 
 // ── Chunk helpers ──
 
-export function insertChunk(chunk: {
+export function insertOrDeduplicateChunk(chunk: {
 	document_id: number;
 	chunk_type: string;
 	section_label?: string;
@@ -77,19 +327,42 @@ export function insertChunk(chunk: {
 	page_end?: number;
 	content: string;
 	confidence?: number;
-}) {
+}): { chunkId: number; isDuplicate: boolean; needsEmbedding: boolean } {
 	const db = getDb();
-	const stmt = db.prepare(`
-		INSERT INTO chunks (document_id, chunk_type, section_label, page_start, page_end, content, confidence)
-		VALUES (@document_id, @chunk_type, @section_label, @page_start, @page_end, @content, @confidence)
-	`);
-	return stmt.run({
-		...chunk,
-		section_label: chunk.section_label ?? null,
-		page_start: chunk.page_start ?? null,
-		page_end: chunk.page_end ?? null,
-		confidence: chunk.confidence ?? 1.0
-	});
+	const hash = contentHash(chunk.content);
+	const conf = chunk.confidence ?? 1.0;
+
+	const existing = db.prepare('SELECT id, confidence FROM chunks WHERE content_hash = ?').get(hash) as
+		| { id: number; confidence: number }
+		| undefined;
+
+	if (existing) {
+		// Duplicate — link document to existing canonical chunk
+		db.prepare(
+			'INSERT OR IGNORE INTO document_chunks (document_id, chunk_id, page_start, page_end) VALUES (?, ?, ?, ?)'
+		).run(chunk.document_id, existing.id, chunk.page_start ?? null, chunk.page_end ?? null);
+
+		// Keep highest confidence
+		if (conf > existing.confidence) {
+			db.prepare('UPDATE chunks SET confidence = ? WHERE id = ?').run(conf, existing.id);
+		}
+
+		return { chunkId: existing.id, isDuplicate: true, needsEmbedding: false };
+	}
+
+	// New canonical chunk
+	const result = db.prepare(
+		'INSERT INTO chunks (content_hash, chunk_type, section_label, content, confidence) VALUES (?, ?, ?, ?, ?)'
+	).run(hash, chunk.chunk_type, chunk.section_label ?? null, chunk.content, conf);
+
+	const chunkId = Number(result.lastInsertRowid);
+
+	// Link document to chunk
+	db.prepare(
+		'INSERT INTO document_chunks (document_id, chunk_id, page_start, page_end) VALUES (?, ?, ?, ?)'
+	).run(chunk.document_id, chunkId, chunk.page_start ?? null, chunk.page_end ?? null);
+
+	return { chunkId, isDuplicate: false, needsEmbedding: true };
 }
 
 export function insertChunkEmbedding(chunkId: number | bigint, embedding: Float32Array) {
@@ -104,7 +377,8 @@ export function insertChunkEmbedding(chunkId: number | bigint, embedding: Float3
 export function searchSimilarChunks(embedding: Float32Array, limit = 10) {
 	const db = getDb();
 	const stmt = db.prepare(`
-		SELECT c.*, vec_chunks.distance
+		SELECT c.*, vec_chunks.distance,
+			(SELECT GROUP_CONCAT(dc.document_id) FROM document_chunks dc WHERE dc.chunk_id = c.id) as document_ids
 		FROM vec_chunks
 		JOIN chunks c ON c.id = vec_chunks.rowid
 		WHERE embedding MATCH ? AND k = ?
@@ -153,23 +427,75 @@ export function findOrCreateProperty(property: {
 	zoning?: string;
 	latitude?: number;
 	longitude?: number;
+	county?: string;
+	owner_name?: string;
+	acquisition_date?: string;
+	occupancy?: string;
+	market_value?: number;
+	county_data_json?: string;
 }): number {
 	const db = getDb();
 	const normalized = normalizeAddress(property.address);
 
 	// Try APN dedup first
+	let existingId: number | undefined;
 	if (property.apn) {
 		const existing = db.prepare('SELECT id FROM properties WHERE apn = ?').get(property.apn) as
 			| { id: number }
 			| undefined;
-		if (existing) return existing.id;
+		if (existing) existingId = existing.id;
 	}
 
 	// Try normalized address dedup
-	const existingByAddr = db
-		.prepare('SELECT id FROM properties WHERE address_normalized = ? AND city = ?')
-		.get(normalized, property.city ?? null) as { id: number } | undefined;
-	if (existingByAddr) return existingByAddr.id;
+	if (!existingId) {
+		const existingByAddr = db
+			.prepare('SELECT id FROM properties WHERE address_normalized = ? AND city = ?')
+			.get(normalized, property.city ?? null) as { id: number } | undefined;
+		if (existingByAddr) existingId = existingByAddr.id;
+	}
+
+	// Upsert: update existing property with wizard-submitted values
+	if (existingId) {
+		db.prepare(`
+			UPDATE properties SET
+				address = @address, address_normalized = @address_normalized,
+				city = @city, state = @state, zip = @zip, apn = @apn,
+				property_type = @property_type, year_built = @year_built,
+				building_sf = @building_sf, land_sf = @land_sf, land_acres = @land_acres,
+				stories = @stories, construction_class = @construction_class,
+				quality = @quality, condition = @condition, zoning = @zoning,
+				market_value = @market_value, county_data_json = @county_data_json,
+				county = @county, owner_name = @owner_name,
+				acquisition_date = @acquisition_date, occupancy = @occupancy,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = @id
+		`).run({
+			id: existingId,
+			address: property.address,
+			address_normalized: normalized,
+			city: property.city ?? null,
+			state: property.state ?? 'UT',
+			zip: property.zip ?? null,
+			apn: property.apn ?? null,
+			property_type: property.property_type ?? null,
+			year_built: property.year_built ?? null,
+			building_sf: property.building_sf ?? null,
+			land_sf: property.land_sf ?? null,
+			land_acres: property.land_acres ?? null,
+			stories: property.stories ?? null,
+			construction_class: property.construction_class ?? null,
+			quality: property.quality ?? null,
+			condition: property.condition ?? null,
+			zoning: property.zoning ?? null,
+			market_value: property.market_value ?? null,
+			county_data_json: property.county_data_json ?? null,
+			county: property.county ?? null,
+			owner_name: property.owner_name ?? null,
+			acquisition_date: property.acquisition_date ?? null,
+			occupancy: property.occupancy ?? null
+		});
+		return existingId;
+	}
 
 	// Insert new property
 	const stmt = db.prepare(`
@@ -177,12 +503,12 @@ export function findOrCreateProperty(property: {
 			address, address_normalized, city, state, zip, apn,
 			property_type, year_built, building_sf, land_sf, land_acres,
 			stories, construction_class, quality, condition, zoning,
-			latitude, longitude
+			market_value, county_data_json, latitude, longitude, county, owner_name, acquisition_date, occupancy
 		) VALUES (
 			@address, @address_normalized, @city, @state, @zip, @apn,
 			@property_type, @year_built, @building_sf, @land_sf, @land_acres,
 			@stories, @construction_class, @quality, @condition, @zoning,
-			@latitude, @longitude
+			@market_value, @county_data_json, @latitude, @longitude, @county, @owner_name, @acquisition_date, @occupancy
 		)
 	`);
 
@@ -203,8 +529,14 @@ export function findOrCreateProperty(property: {
 		quality: property.quality ?? null,
 		condition: property.condition ?? null,
 		zoning: property.zoning ?? null,
+		market_value: property.market_value ?? null,
+		county_data_json: property.county_data_json ?? null,
 		latitude: property.latitude ?? null,
-		longitude: property.longitude ?? null
+		longitude: property.longitude ?? null,
+		county: property.county ?? null,
+		owner_name: property.owner_name ?? null,
+		acquisition_date: property.acquisition_date ?? null,
+		occupancy: property.occupancy ?? null
 	});
 
 	return Number(result.lastInsertRowid);
@@ -392,17 +724,23 @@ export function createReport(report: {
 	subject_property_id: number;
 	approach: string;
 	effective_date?: string;
+	client_name?: string;
+	intended_use?: string;
+	property_rights?: string;
 }) {
 	const db = getDb();
 	const stmt = db.prepare(`
-		INSERT INTO reports (report_number, subject_property_id, approach, effective_date)
-		VALUES (@report_number, @subject_property_id, @approach, @effective_date)
+		INSERT INTO reports (report_number, subject_property_id, approach, effective_date, client_name, intended_use, property_rights)
+		VALUES (@report_number, @subject_property_id, @approach, @effective_date, @client_name, @intended_use, @property_rights)
 	`);
 	return stmt.run({
 		report_number: report.report_number ?? null,
 		subject_property_id: report.subject_property_id,
 		approach: report.approach,
-		effective_date: report.effective_date ?? null
+		effective_date: report.effective_date ?? null,
+		client_name: report.client_name ?? null,
+		intended_use: report.intended_use ?? 'estimate market value',
+		property_rights: report.property_rights ?? 'fee simple'
 	});
 }
 
@@ -411,7 +749,9 @@ export function getReport(id: number) {
 	return db
 		.prepare(
 			`
-		SELECT r.*, p.address as subject_address, p.city as subject_city
+		SELECT r.*, p.address as subject_address, p.city as subject_city,
+			p.property_type as subject_property_type, p.building_sf as subject_building_sf,
+			p.year_built as subject_year_built
 		FROM reports r
 		JOIN properties p ON p.id = r.subject_property_id
 		WHERE r.id = ?

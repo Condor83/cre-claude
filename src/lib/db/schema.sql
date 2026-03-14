@@ -13,20 +13,30 @@ CREATE TABLE IF NOT EXISTS documents (
   error_message TEXT
 );
 
--- Smart chunks from PDFs
+-- Smart chunks from PDFs (canonical, deduplicated by content_hash)
 CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY,
-  document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+  content_hash TEXT NOT NULL,
   chunk_type TEXT NOT NULL CHECK(chunk_type IN ('clause', 'exemplar', 'evidence', 'table')),
   section_label TEXT,
-  page_start INTEGER,
-  page_end INTEGER,
   content TEXT NOT NULL,
   confidence REAL DEFAULT 1.0
 );
-CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash);
 CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(chunk_type);
 CREATE INDEX IF NOT EXISTS idx_chunks_section ON chunks(section_label);
+
+-- Junction: which documents contain which chunks (M:N for deduplication)
+CREATE TABLE IF NOT EXISTS document_chunks (
+  id INTEGER PRIMARY KEY,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+  page_start INTEGER,
+  page_end INTEGER,
+  UNIQUE(document_id, chunk_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dc_document ON document_chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_dc_chunk ON document_chunks(chunk_id);
 
 -- Canonical property/parcel records
 CREATE TABLE IF NOT EXISTS properties (
@@ -47,6 +57,8 @@ CREATE TABLE IF NOT EXISTS properties (
   quality TEXT,
   condition TEXT,
   zoning TEXT,
+  market_value REAL,
+  county_data_json TEXT,
   latitude REAL,
   longitude REAL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -115,8 +127,11 @@ CREATE TABLE IF NOT EXISTS reports (
   id INTEGER PRIMARY KEY,
   report_number TEXT,
   subject_property_id INTEGER REFERENCES properties(id),
-  approach TEXT CHECK(approach IN ('sales_comparison', 'income_cap', 'both')),
+  approach TEXT,
   effective_date TEXT,
+  client_name TEXT,
+  intended_use TEXT DEFAULT 'estimate market value',
+  property_rights TEXT DEFAULT 'fee simple',
   status TEXT DEFAULT 'draft' CHECK(status IN ('draft', 'review', 'final')),
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP

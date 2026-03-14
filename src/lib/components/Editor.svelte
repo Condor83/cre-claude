@@ -21,6 +21,7 @@
 	let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 	let autosaveInterval: ReturnType<typeof setInterval> | null = null;
 	let ghostTimeout: ReturnType<typeof setTimeout> | null = null;
+	let suppressUpdate = false;
 
 	onMount(() => {
 		editor = new TiptapEditor({
@@ -33,6 +34,9 @@
 			],
 			content: initialContent || '',
 			onUpdate: ({ editor: e }) => {
+				// Skip save/ghost when programmatically resetting content on section switch
+				if (suppressUpdate) return;
+
 				// Clear ghost text on any edit
 				ghostText = '';
 				showGhost = false;
@@ -121,7 +125,9 @@
 	// Reset editor when section changes
 	$effect(() => {
 		if (editor && sectionKey) {
+			suppressUpdate = true;
 			editor.commands.setContent(initialContent || '');
+			suppressUpdate = false;
 			ghostText = '';
 			showGhost = false;
 		}

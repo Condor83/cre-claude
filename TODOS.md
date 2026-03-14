@@ -60,6 +60,32 @@
 - **Priority:** P2
 - **Depends on:** ~~Addendum section_label taxonomy~~ Ready to start (22 section labels implemented)
 
+### Wire county_data_json into Copilot Context
+- **What:** Add county_data_json to context sent to Claude when writing report sections (`src/lib/copilot/context.ts`)
+- **Why:** Bradford's data needs to feed into AI-drafted sections — value history, tax trends, ownership chain, assessed values
+- **Effort:** S
+- **Priority:** P1
+- **Depends on:** Parcel-first county scraper (county_data_json stored on property)
+
+### Scraper Selector Maintenance
+- **What:** Quarterly manual smoke test of county scraper selectors against live Utah County assessor site. Verify search flow and field extraction still work.
+- **Why:** County websites update their HTML periodically. Selectors break silently.
+- **Effort:** S
+- **Priority:** P3
+- **Depends on:** County scraper (implemented)
+
+### Expand County Scraper
+- **What:** Add support for additional Utah counties (Davis, Weber, Cache, etc.) and fill in Salt Lake County scraper as client takes engagements outside Utah County.
+- **Effort:** M per county
+- **Priority:** P3
+- **Depends on:** County scraper framework (implemented)
+
+### E2E Test Suite (Playwright)
+- **What:** Full wizard flow: submission, back button state, scraper pre-fill, approach-filtered sections in editor. Plus report editing round-trip.
+- **Effort:** M
+- **Priority:** P2
+- **Depends on:** Vitest setup (done), Playwright install
+
 ## Skipped
 
 ### Browser Agents for Missing Info
