@@ -263,6 +263,18 @@ function migrateReportSectionsColumns(db: Database.Database): void {
 	console.log('[sections-migration] Complete');
 }
 
+// ── Schema migration: add source column to section_images ──
+
+function migrateSectionImagesSource(db: Database.Database): void {
+	const cols = db.prepare("PRAGMA table_info(section_images)").all() as Array<{ name: string }>;
+	const hasSource = cols.some(c => c.name === 'source');
+	if (hasSource) return;
+
+	console.log('[images-migration] Adding source column to section_images...');
+	db.exec(`ALTER TABLE section_images ADD COLUMN source TEXT DEFAULT 'manual'`);
+	console.log('[images-migration] Complete');
+}
+
 export function getDb(): Database.Database {
 	if (_db) return _db;
 
@@ -299,6 +311,9 @@ export function getDb(): Database.Database {
 
 	// Migrate report_sections (status + form_data columns)
 	migrateReportSectionsColumns(_db);
+
+	// Migrate section_images (source column)
+	migrateSectionImagesSource(_db);
 
 	// Re-run schema to ensure all indexes exist (idempotent after migration)
 	_db.exec(schema);
@@ -895,6 +910,7 @@ export function getReportComps(reportId: number) {
 		.prepare(
 			`
 		SELECT rc.*, p.address, p.city, p.building_sf, p.year_built, p.property_type,
+			p.latitude, p.longitude, p.apn, p.county,
 			s.sale_date, s.sale_price, s.price_per_sf, s.cap_rate as sale_cap_rate,
 			l.tenant_name, l.rent_per_sf, l.lease_type, l.mls_sourced as lease_mls_sourced,
 			s.mls_sourced as sale_mls_sourced
@@ -1074,6 +1090,7 @@ export interface SectionImage {
 	file_path: string;
 	caption: string | null;
 	sort_order: number;
+	source: string;
 	created_at: string;
 }
 
@@ -1096,13 +1113,14 @@ export function addSectionImage(
 	sectionKey: string,
 	filePath: string,
 	caption: string | null,
-	sortOrder: number
+	sortOrder: number,
+	source: 'manual' | 'auto' = 'manual'
 ): number {
 	const db = getDb();
 	const result = db.prepare(
-		`INSERT INTO section_images (report_id, section_key, file_path, caption, sort_order)
-		 VALUES (?, ?, ?, ?, ?)`
-	).run(reportId, sectionKey, filePath, caption, sortOrder);
+		`INSERT INTO section_images (report_id, section_key, file_path, caption, sort_order, source)
+		 VALUES (?, ?, ?, ?, ?, ?)`
+	).run(reportId, sectionKey, filePath, caption, sortOrder, source);
 	return Number(result.lastInsertRowid);
 }
 

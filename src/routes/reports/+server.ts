@@ -4,6 +4,7 @@ import { createReport, findOrCreateProperty, listReports, saveSectionAutoContent
 import { buildTemplateContext } from '$lib/templates/context.js';
 import { AUTO_TEMPLATES } from '$lib/templates/sections/index.js';
 import { getSectionsForApproaches, type SectionDef } from '$lib/config/sections.js';
+import { autoSourceSubjectImages } from '$lib/services/auto-source-images.js';
 
 const VALID_APPROACHES = ['sales_comparison', 'income_cap', 'cost'];
 
@@ -124,6 +125,11 @@ export const POST: RequestHandler = async ({ request }) => {
 		} catch (err) {
 			console.error('[reports POST] AUTO pre-population failed (non-fatal):', err);
 		}
+
+		// Fire-and-forget: auto-source subject images
+		autoSourceSubjectImages(reportId).catch(err =>
+			console.error('[auto-source] Subject images failed (non-fatal):', err)
+		);
 
 		return json({ id: reportId });
 	} catch (err) {

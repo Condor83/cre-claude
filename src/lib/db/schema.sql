@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS section_images (
   file_path TEXT NOT NULL,
   caption TEXT,
   sort_order INTEGER DEFAULT 0,
+  source TEXT DEFAULT 'manual',
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_section_images_report ON section_images(report_id);

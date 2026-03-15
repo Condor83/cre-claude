@@ -42,6 +42,83 @@
 	let showCompSearch = $state(false);
 	let showPropertyFacts = $state(false);
 	let generating = $state(false);
+	let fetchingCompImages = $state(false);
+
+	// ── Auto-source progress polling ──
+	interface AutoSourceStatus {
+		state: 'idle' | 'running' | 'done' | 'error';
+		total: number;
+		completed: number;
+		errors: string[];
+	}
+	let autoSourceStatus = $state<AutoSourceStatus | null>(null);
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+	function startPolling(type: 'subject' | 'comps') {
+		stopPolling();
+		pollTimer = setInterval(async () => {
+			const res = await fetch(`/api/auto-source?report_id=${data.report.id}&type=${type}`);
+			if (res.ok) {
+				const status = await res.json();
+				autoSourceStatus = status;
+				if (status.state === 'done' || status.state === 'error' || status.state === 'idle') {
+					stopPolling();
+					if (status.state === 'done') {
+						// Reload images
+						const imgRes = await fetch(`/api/images?report_id=${data.report.id}&section_key=_all`);
+						if (imgRes.ok) {
+							// Just reload the page to pick up new images
+							window.location.reload();
+						}
+					}
+					if (type === 'comps') fetchingCompImages = false;
+				}
+			}
+		}, 3000);
+	}
+
+	function stopPolling() {
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+		}
+	}
+
+	// Start polling for subject images on mount (they start on report creation)
+	$effect(() => {
+		// Check if auto-sourcing is in progress
+		fetch(`/api/auto-source?report_id=${data.report.id}&type=subject`)
+			.then(r => r.json())
+			.then(status => {
+				if (status.state === 'running') {
+					autoSourceStatus = status;
+					startPolling('subject');
+				}
+			})
+			.catch(() => {});
+
+		return () => stopPolling();
+	});
+
+	async function handleFetchCompImages() {
+		fetchingCompImages = true;
+		try {
+			const res = await fetch('/api/auto-source', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ report_id: data.report.id })
+			});
+			if (res.ok) {
+				startPolling('comps');
+			} else {
+				const err = await res.json();
+				alert(err.error || 'Failed to start comp image sourcing');
+				fetchingCompImages = false;
+			}
+		} catch {
+			fetchingCompImages = false;
+		}
+	}
 
 	const activeSectionDef = $derived(SECTION_MAP[activeSection]);
 	const activeTier = $derived(activeSectionDef?.tier ?? 'prose');
@@ -312,12 +389,21 @@
 			{sectionStatuses}
 			onselect={(key) => activeSection = key}
 		/>
+		{#if autoSourceStatus?.state === 'running'}
+			<div class="auto-source-indicator">
+				<span class="auto-source-dot"></span>
+				Sourcing images... {autoSourceStatus.completed}/{autoSourceStatus.total}
+			</div>
+		{/if}
 		<div class="sidebar-actions">
 			<button class="btn btn-secondary" onclick={() => { showPropertyFacts = !showPropertyFacts; if (showPropertyFacts) showCompSearch = false; }}>
 				{showPropertyFacts ? 'Hide Facts' : 'Property Facts'}
 			</button>
 			<button class="btn btn-secondary" onclick={() => { showCompSearch = !showCompSearch; if (showCompSearch) showPropertyFacts = false; }}>
 				{showCompSearch ? 'Hide Comps' : 'Manage Comps'}
+			</button>
+			<button class="btn btn-secondary" onclick={handleFetchCompImages} disabled={fetchingCompImages}>
+				{fetchingCompImages ? 'Fetching...' : 'Fetch Comp Images'}
 			</button>
 			<button class="btn btn-secondary" onclick={handleRegenerateAll} disabled={regeneratingAll}>
 				{regeneratingAll ? 'Regenerating...' : 'Regenerate Auto'}
@@ -407,6 +493,18 @@
 				onRequestGhostText={(text) => generateGhostText(activeSection, text)}
 				reportId={data.report.id}
 			/>
+		{/if}
+
+		{#if activeTier !== 'images' && activeTier !== 'upload' && activeSectionImages.length > 0}
+			<div class="section-images-below">
+				<ImageUploader
+					reportId={data.report.id}
+					sectionKey={activeSection}
+					images={activeSectionImages}
+					layout="grid"
+					onchange={handleImageChange}
+				/>
+			</div>
 		{/if}
 
 		{#if activeSection === 'sales_comparison' || activeSection === 'income_approach'}
@@ -646,5 +744,32 @@
 
 	.picker-btn:hover {
 		background: #2a2a4e;
+	}
+
+	.section-images-below {
+		margin-top: 1.5rem;
+		padding-top: 1rem;
+		border-top: 1px solid #eee;
+	}
+
+	.auto-source-indicator {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		background: #e3f2fd;
+		border: 1px solid #90caf9;
+		border-radius: 6px;
+		font-size: 0.8rem;
+		color: #1565c0;
+		margin-bottom: 0.5rem;
+	}
+
+	.auto-source-dot {
+		width: 8px;
+		height: 8px;
+		background: #1565c0;
+		border-radius: 50%;
+		animation: pulse 1.5s infinite;
 	}
 </style>

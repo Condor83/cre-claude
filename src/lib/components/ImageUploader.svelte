@@ -38,6 +38,22 @@
 	let editingCaptionId: number | null = $state(null);
 	let editingCaptionText = $state('');
 	let error: string | null = $state(null);
+	let lightboxImageId: number | null = $state(null);
+	let lightboxCaption: string | null = $state(null);
+
+	function openLightbox(image: SectionImage) {
+		lightboxImageId = image.id;
+		lightboxCaption = image.caption;
+	}
+
+	function closeLightbox() {
+		lightboxImageId = null;
+		lightboxCaption = null;
+	}
+
+	function handleLightboxKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape') closeLightbox();
+	}
 
 	let sortedImages = $derived(
 		[...localImages].sort((a, b) => a.sort_order - b.sort_order)
@@ -270,12 +286,14 @@
 			{#each sortedImages as image, idx (image.id)}
 				<div class="image-card">
 					<div class="image-wrapper">
-						<img
-							src="/api/images?id={image.id}"
-							alt={image.caption || 'Section image'}
-							class="thumbnail"
-							loading="lazy"
-						/>
+						<button class="thumbnail-btn" onclick={() => openLightbox(image)} title="Click to view full size">
+							<img
+								src="/api/images?id={image.id}"
+								alt={image.caption || 'Section image'}
+								class="thumbnail"
+								loading="lazy"
+							/>
+						</button>
 						<button
 							class="delete-btn"
 							onclick={() => deleteImage(image.id)}
@@ -338,6 +356,32 @@
 		</div>
 	{/if}
 </div>
+
+{#if lightboxImageId}
+	<div
+		class="lightbox-overlay"
+		onclick={closeLightbox}
+		onkeydown={handleLightboxKeydown}
+		role="dialog"
+		aria-label="Image preview"
+		tabindex="-1"
+	>
+		<button class="lightbox-close" onclick={closeLightbox} aria-label="Close preview">
+			<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+			</svg>
+		</button>
+		<img
+			src="/api/images?id={lightboxImageId}"
+			alt={lightboxCaption || 'Full size image'}
+			class="lightbox-img"
+			onclick={(e) => e.stopPropagation()}
+		/>
+		{#if lightboxCaption}
+			<div class="lightbox-caption" onclick={(e) => e.stopPropagation()}>{lightboxCaption}</div>
+		{/if}
+	</div>
+{/if}
 
 <style>
 	.image-uploader {
@@ -473,6 +517,16 @@
 		background: #f5f5f5;
 	}
 
+	.thumbnail-btn {
+		width: 100%;
+		height: 100%;
+		padding: 0;
+		border: none;
+		background: none;
+		cursor: zoom-in;
+		display: block;
+	}
+
 	.thumbnail {
 		width: 100%;
 		height: 100%;
@@ -576,5 +630,48 @@
 		background: transparent;
 		color: #333;
 		line-height: 1.3;
+	}
+
+	/* ── Lightbox ── */
+	.lightbox-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 1000;
+		background: rgba(0, 0, 0, 0.85);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		cursor: zoom-out;
+	}
+
+	.lightbox-close {
+		position: absolute;
+		top: 1rem;
+		right: 1rem;
+		background: none;
+		border: none;
+		color: #fff;
+		cursor: pointer;
+		opacity: 0.7;
+	}
+
+	.lightbox-close:hover {
+		opacity: 1;
+	}
+
+	.lightbox-img {
+		max-width: 90vw;
+		max-height: 85vh;
+		object-fit: contain;
+		border-radius: 4px;
+		cursor: default;
+	}
+
+	.lightbox-caption {
+		margin-top: 0.75rem;
+		color: #ccc;
+		font-size: 0.9rem;
+		cursor: default;
 	}
 </style>
