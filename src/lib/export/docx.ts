@@ -6,9 +6,17 @@ import {
 	HeadingLevel,
 	AlignmentType,
 	PageBreak,
-	LevelFormat
+	LevelFormat,
+	ImageRun,
+	Table,
+	TableRow,
+	TableCell,
+	WidthType,
+	BorderStyle
 } from 'docx';
-import { getDb, getSections, getAllAppraiserSettings } from '$lib/db/index.js';
+import { readFileSync, existsSync } from 'fs';
+import { getDb, getSections, getAllAppraiserSettings, getSectionImages } from '$lib/db/index.js';
+import type { SectionImage } from '$lib/db/index.js';
 import {
 	getSectionsForApproaches,
 	SECTION_LABEL_MAP,
@@ -320,6 +328,163 @@ function buildTitlePage(report: ReportData, appraiser: Record<string, string>): 
 	return paragraphs;
 }
 
+// ── Image dimensions ──
+
+const FULL_WIDTH_EMU = 5_930_900; // ~6.5" in EMUs (914400 per inch)
+const GRID_WIDTH_EMU = 2_830_000; // ~3.1" in EMUs
+const MAX_HEIGHT_EMU = 4_572_000; // ~5" max height
+
+function getImageDimensions(buffer: Buffer): { width: number; height: number } {
+	// Read dimensions from image header (PNG or JPEG)
+	if (buffer[0] === 0x89 && buffer[1] === 0x50) {
+		// PNG: width at offset 16, height at offset 20 (big-endian 4 bytes)
+		const width = buffer.readUInt32BE(16);
+		const height = buffer.readUInt32BE(20);
+		return { width, height };
+	}
+	if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+		// JPEG: scan for SOF0/SOF2 marker
+		let offset = 2;
+		while (offset < buffer.length - 8) {
+			if (buffer[offset] === 0xff) {
+				const marker = buffer[offset + 1];
+				if (marker === 0xc0 || marker === 0xc2) {
+					const height = buffer.readUInt16BE(offset + 5);
+					const width = buffer.readUInt16BE(offset + 7);
+					return { width, height };
+				}
+				const segLen = buffer.readUInt16BE(offset + 2);
+				offset += 2 + segLen;
+			} else {
+				offset++;
+			}
+		}
+	}
+	// Fallback: assume 4:3 aspect ratio
+	return { width: 1200, height: 900 };
+}
+
+function scaleToFit(
+	imgWidth: number,
+	imgHeight: number,
+	maxWidth: number,
+	maxHeight: number
+): { width: number; height: number } {
+	const wScale = maxWidth / imgWidth;
+	const hScale = maxHeight / imgHeight;
+	const scale = Math.min(wScale, hScale, 1);
+	return {
+		width: Math.round(imgWidth * scale),
+		height: Math.round(imgHeight * scale)
+	};
+}
+
+function createImageParagraph(
+	buffer: Buffer,
+	maxWidthEmu: number,
+	caption?: string | null
+): Paragraph[] {
+	const { width, height } = getImageDimensions(buffer);
+	const aspect = height / width;
+	const fitWidth = maxWidthEmu;
+	const fitHeight = Math.round(fitWidth * aspect);
+	const finalHeight = Math.min(fitHeight, MAX_HEIGHT_EMU);
+	const finalWidth = finalHeight < fitHeight
+		? Math.round(finalHeight / aspect)
+		: fitWidth;
+
+	const paragraphs: Paragraph[] = [
+		new Paragraph({
+			children: [
+				new ImageRun({
+					data: buffer,
+					transformation: { width: finalWidth, height: finalHeight },
+					type: 'jpg'
+				})
+			],
+			alignment: AlignmentType.CENTER,
+			spacing: { before: 100, after: 100 }
+		})
+	];
+
+	if (caption) {
+		paragraphs.push(
+			new Paragraph({
+				children: [
+					new TextRun({
+						text: caption,
+						size: 20, // 10pt
+						font: FONT,
+						bold: true
+					})
+				],
+				alignment: AlignmentType.CENTER,
+				spacing: { after: 200 }
+			})
+		);
+	}
+
+	return paragraphs;
+}
+
+const NO_BORDER = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
+const NO_BORDERS = { top: NO_BORDER, bottom: NO_BORDER, left: NO_BORDER, right: NO_BORDER };
+
+function renderSectionImages(
+	images: SectionImage[],
+	gridLayout: boolean
+): (Paragraph | Table)[] {
+	const results: (Paragraph | Table)[] = [];
+
+	if (!gridLayout) {
+		// Full-width layout: one image per row
+		for (const img of images) {
+			if (!existsSync(img.file_path)) continue;
+			const buffer = readFileSync(img.file_path);
+			results.push(...createImageParagraph(buffer, FULL_WIDTH_EMU, img.caption));
+		}
+		return results;
+	}
+
+	// 2-per-row grid layout
+	const validImages = images.filter((img) => existsSync(img.file_path));
+	for (let i = 0; i < validImages.length; i += 2) {
+		const img1 = validImages[i];
+		const img2 = i + 1 < validImages.length ? validImages[i + 1] : null;
+
+		const buf1 = readFileSync(img1.file_path);
+		const cell1Content = createImageParagraph(buf1, GRID_WIDTH_EMU, img1.caption);
+
+		const cell2Content = img2
+			? createImageParagraph(readFileSync(img2.file_path), GRID_WIDTH_EMU, img2.caption)
+			: [new Paragraph({ children: [] })];
+
+		const row = new TableRow({
+			children: [
+				new TableCell({
+					children: cell1Content,
+					borders: NO_BORDERS,
+					width: { size: 50, type: WidthType.PERCENTAGE }
+				}),
+				new TableCell({
+					children: cell2Content,
+					borders: NO_BORDERS,
+					width: { size: 50, type: WidthType.PERCENTAGE }
+				})
+			]
+		});
+
+		results.push(
+			new Table({
+				rows: [row],
+				width: { size: 100, type: WidthType.PERCENTAGE }
+			})
+		);
+	}
+
+	return results;
+}
+
 export async function generateDocx(reportId: number): Promise<Buffer> {
 	const db = getDb();
 
@@ -362,8 +527,13 @@ export async function generateDocx(reportId: number): Promise<Buffer> {
 		// Skip title_page (already rendered above) and table_of_contents (needs Word field codes)
 		if (key === 'title_page' || key === 'table_of_contents') continue;
 
-		// Skip sections with no content — regardless of tier
-		if (!section?.content_html?.trim()) continue;
+		// Check for section images
+		const sectionImages = getSectionImages(reportId, key);
+		const hasContent = section?.content_html?.trim();
+		const hasImages = sectionImages.length > 0;
+
+		// Skip sections with no content AND no images
+		if (!hasContent && !hasImages) continue;
 
 		// Smart page breaks: before major sections or group transitions
 		const groupChanged = lastGroup !== null && sectionDef.group !== lastGroup;
@@ -391,9 +561,17 @@ export async function generateDocx(reportId: number): Promise<Buffer> {
 		);
 
 		// Section content — strip leading duplicate heading from auto templates
-		const cleanedHtml = stripLeadingHeading(section.content_html);
-		const docxNodes = htmlToDocx(cleanedHtml);
-		children.push(...docxNodes);
+		if (hasContent) {
+			const cleanedHtml = stripLeadingHeading(section!.content_html);
+			const docxNodes = htmlToDocx(cleanedHtml);
+			children.push(...docxNodes);
+		}
+
+		// Section images
+		if (hasImages) {
+			const isGrid = sectionDef.tier === 'images' || key === 'photographs';
+			children.push(...renderSectionImages(sectionImages, isGrid));
+		}
 	}
 
 	const doc = new Document({

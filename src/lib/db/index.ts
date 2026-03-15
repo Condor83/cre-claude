@@ -1064,3 +1064,62 @@ export function upsertMarketData(data: {
 		source: data.source ?? null
 	});
 }
+
+// ── Section image helpers ──
+
+export interface SectionImage {
+	id: number;
+	report_id: number;
+	section_key: string;
+	file_path: string;
+	caption: string | null;
+	sort_order: number;
+	created_at: string;
+}
+
+export function getSectionImages(reportId: number, sectionKey: string): SectionImage[] {
+	const db = getDb();
+	return db.prepare(
+		'SELECT * FROM section_images WHERE report_id = ? AND section_key = ? ORDER BY sort_order, id'
+	).all(reportId, sectionKey) as SectionImage[];
+}
+
+export function getAllReportImages(reportId: number): SectionImage[] {
+	const db = getDb();
+	return db.prepare(
+		'SELECT * FROM section_images WHERE report_id = ? ORDER BY section_key, sort_order, id'
+	).all(reportId) as SectionImage[];
+}
+
+export function addSectionImage(
+	reportId: number,
+	sectionKey: string,
+	filePath: string,
+	caption: string | null,
+	sortOrder: number
+): number {
+	const db = getDb();
+	const result = db.prepare(
+		`INSERT INTO section_images (report_id, section_key, file_path, caption, sort_order)
+		 VALUES (?, ?, ?, ?, ?)`
+	).run(reportId, sectionKey, filePath, caption, sortOrder);
+	return Number(result.lastInsertRowid);
+}
+
+export function updateImageCaption(imageId: number, caption: string): void {
+	const db = getDb();
+	db.prepare('UPDATE section_images SET caption = ? WHERE id = ?').run(caption, imageId);
+}
+
+export function updateImageOrder(imageId: number, sortOrder: number): void {
+	const db = getDb();
+	db.prepare('UPDATE section_images SET sort_order = ? WHERE id = ?').run(sortOrder, imageId);
+}
+
+export function deleteImage(imageId: number): string | null {
+	const db = getDb();
+	const row = db.prepare('SELECT file_path FROM section_images WHERE id = ?').get(imageId) as { file_path: string } | undefined;
+	if (!row) return null;
+	db.prepare('DELETE FROM section_images WHERE id = ?').run(imageId);
+	return row.file_path;
+}

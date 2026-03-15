@@ -1,5 +1,5 @@
 import { error } from '@sveltejs/kit';
-import { getReport, getSections, getReportComps, getPropertyContext } from '$lib/db/index.js';
+import { getReport, getSections, getReportComps, getPropertyContext, getAllReportImages } from '$lib/db/index.js';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params }) => {
@@ -19,6 +19,7 @@ export const load: PageServerLoad = async ({ params }) => {
 	}>;
 	const comps = getReportComps(reportId) as Array<Record<string, unknown>>;
 	const propertyContext = getPropertyContext(reportId);
+	const images = getAllReportImages(reportId);
 
 	// Build section status map
 	const sectionStatuses: Record<string, string> = {};
@@ -31,6 +32,7 @@ export const load: PageServerLoad = async ({ params }) => {
 		sections,
 		comps,
 		propertyContext,
-		sectionStatuses
+		sectionStatuses,
+		images
 	};
 };

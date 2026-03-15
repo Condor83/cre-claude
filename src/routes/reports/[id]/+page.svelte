@@ -6,6 +6,8 @@
 	import PropertyFacts from '$lib/components/PropertyFacts.svelte';
 	import AdjustmentGrid from '$lib/components/AdjustmentGrid.svelte';
 	import SalientFactsTable from '$lib/components/SalientFactsTable.svelte';
+	import ImageUploader from '$lib/components/ImageUploader.svelte';
+	import type { SectionImage } from '$lib/db/index.js';
 	import {
 		getSectionsForApproaches,
 		getSectionsByGroup,
@@ -29,6 +31,11 @@
 			group: s.group,
 			tier: s.tier
 		})))
+	);
+
+	// Images for active section
+	const activeSectionImages = $derived(
+		(data.images as SectionImage[])?.filter((img: SectionImage) => img.section_key === activeSection) ?? []
 	);
 
 	let activeSection = $state('title_page');
@@ -244,6 +251,10 @@
 		});
 	}
 
+	function handleImageChange(key: string, imageCount: number) {
+		sectionStatuses[key] = imageCount > 0 ? 'reviewed' : 'empty';
+	}
+
 	async function handleRevertToAuto(sectionKey: string) {
 		await handleRegenerate(sectionKey);
 	}
@@ -360,17 +371,21 @@
 				onOverride={() => handleOverride(activeSection)}
 				onRegenerate={() => handleRegenerate(activeSection)}
 			/>
-		{:else if activeTier === 'images' || activeTier === 'upload'}
-			<div class="placeholder-section">
-				<p>Image/upload sections coming in Sprint 2.</p>
-				<p>Use the editor below to add notes for this section.</p>
-			</div>
-			<Editor
-				sectionKey={activeSection}
-				initialContent={getInitialHtml(activeSection)}
-				onSave={(json, html) => saveSection(activeSection, json, html)}
-				onRequestGhostText={(text) => generateGhostText(activeSection, text)}
+		{:else if activeTier === 'images'}
+			<ImageUploader
 				reportId={data.report.id}
+				sectionKey={activeSection}
+				images={activeSectionImages}
+				layout="grid"
+				onchange={handleImageChange}
+			/>
+		{:else if activeTier === 'upload'}
+			<ImageUploader
+				reportId={data.report.id}
+				sectionKey={activeSection}
+				images={activeSectionImages}
+				layout="single"
+				onchange={handleImageChange}
 			/>
 		{:else}
 			{#if isAutoOverridden(activeSection)}
