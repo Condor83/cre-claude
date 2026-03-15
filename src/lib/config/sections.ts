@@ -40,7 +40,7 @@ export const ALL_SECTIONS: SectionDef[] = [
 	// ── Group 1: Front Matter ──
 	{ key: 'title_page', label: 'Title Page', group: 'front_matter', tier: 'auto', approaches: ['always'] },
 	{ key: 'transmittal', label: 'Letter of Transmittal', group: 'front_matter', tier: 'guided', approaches: ['always'] },
-	{ key: 'summary_conclusions', label: 'Summary of Salient Facts & Conclusions', group: 'front_matter', tier: 'auto', approaches: ['always'] },
+	{ key: 'summary_conclusions', label: 'Summary of Important Conclusions', group: 'front_matter', tier: 'auto', approaches: ['always'] },
 	{ key: 'table_of_contents', label: 'Table of Contents', group: 'front_matter', tier: 'auto', approaches: ['always'], docxOnly: true },
 
 	// ── Group 2: Identification & Scope ──
@@ -63,7 +63,8 @@ export const ALL_SECTIONS: SectionDef[] = [
 	{ key: 'assessment_taxes', label: 'Assessment & Taxes', group: 'factual_descriptions', tier: 'auto', approaches: ['always'] },
 
 	// ── Group 4: Valuation ──
-	{ key: 'highest_best_use', label: 'Highest & Best Use', group: 'valuation', tier: 'guided', approaches: ['always'] },
+	{ key: 'highest_best_use', label: 'Highest & Best Use', group: 'valuation', tier: 'auto', approaches: ['always'] },
+	{ key: 'highest_best_use_analysis', label: 'Highest & Best Use Analysis', group: 'valuation', tier: 'prose', approaches: ['always'] },
 	{ key: 'valuation_process', label: 'Valuation Process', group: 'valuation', tier: 'auto', approaches: ['always'] },
 	{ key: 'sales_comparison', label: 'Sales Comparison Approach', group: 'valuation', tier: 'prose', approaches: ['sales_comparison'] },
 	{ key: 'income_approach', label: 'Income Capitalization Approach', group: 'valuation', tier: 'prose', approaches: ['income_cap'] },
@@ -72,7 +73,7 @@ export const ALL_SECTIONS: SectionDef[] = [
 	{ key: 'certification', label: 'Certification', group: 'valuation', tier: 'auto', approaches: ['always'] },
 	{ key: 'general_assumptions', label: 'General Assumptions', group: 'valuation', tier: 'auto', approaches: ['always'] },
 	{ key: 'general_limiting_conditions', label: 'General Limiting Conditions', group: 'valuation', tier: 'auto', approaches: ['always'] },
-	{ key: 'special_limiting_conditions', label: 'Special Assumptions & Limiting Conditions', group: 'valuation', tier: 'prose', approaches: ['always'] },
+	{ key: 'special_limiting_conditions', label: 'Special Limiting Conditions', group: 'valuation', tier: 'auto', approaches: ['always'] },
 	{ key: 'photographs', label: 'Subject Photographs', group: 'valuation', tier: 'images', approaches: ['always'] },
 	{ key: 'appraiser_qualifications', label: 'Appraiser Qualifications', group: 'valuation', tier: 'auto', approaches: ['always'] },
 
@@ -127,11 +128,6 @@ export const GUIDED_SUBSECTIONS: Record<string, SubsectionDef[]> = {
 		{ key: 'detail', label: 'Detailed Description', type: 'freeform', placeholder: 'Describe construction details, finishes, mechanicals...' },
 		{ key: 'floor_plan', label: 'Floor Plans', type: 'image' }
 	],
-	highest_best_use: [
-		{ key: 'framework', label: 'Four-Tests Framework', type: 'auto' },
-		{ key: 'as_vacant', label: 'As Vacant Conclusion', type: 'freeform', placeholder: 'HBU as vacant analysis...' },
-		{ key: 'as_improved', label: 'As Improved Conclusion', type: 'freeform', placeholder: 'HBU as improved analysis...' }
-	]
 };
 
 // ── Derived lookups (computed once at import time) ──

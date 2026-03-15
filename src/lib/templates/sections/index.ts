@@ -18,6 +18,8 @@ import { render as appraiser_qualifications } from './appraiser_qualifications.j
 import { render as definitions_glossary } from './definitions_glossary.js';
 import { render as title_page } from './title_page.js';
 import { render as summary_conclusions } from './summary_conclusions.js';
+import { render as highest_best_use } from './highest_best_use.js';
+import { render as special_limiting_conditions } from './special_limiting_conditions.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const AUTO_TEMPLATES: Record<string, (ctx: TemplateContext, options?: any) => string> = {
@@ -38,5 +40,7 @@ export const AUTO_TEMPLATES: Record<string, (ctx: TemplateContext, options?: any
 	appraiser_qualifications,
 	definitions_glossary,
 	title_page,
-	summary_conclusions
+	summary_conclusions,
+	highest_best_use,
+	special_limiting_conditions
 };

@@ -201,16 +201,22 @@
 		}
 	}
 
+	let exporting = $state(false);
 	async function exportDocx() {
-		const res = await fetch(`/export?report_id=${data.report.id}`);
-		if (res.ok) {
-			const blob = await res.blob();
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			a.href = url;
-			a.download = `${data.report.report_number || 'report'}.docx`;
-			a.click();
-			URL.revokeObjectURL(url);
+		exporting = true;
+		try {
+			const res = await fetch(`/export?report_id=${data.report.id}`);
+			if (res.ok) {
+				const blob = await res.blob();
+				const url = URL.createObjectURL(blob);
+				const a = document.createElement('a');
+				a.href = url;
+				a.download = `${data.report.report_number || 'report'}.docx`;
+				a.click();
+				URL.revokeObjectURL(url);
+			}
+		} finally {
+			exporting = false;
 		}
 	}
 
@@ -305,8 +311,8 @@
 			<button class="btn btn-secondary" onclick={handleRegenerateAll} disabled={regeneratingAll}>
 				{regeneratingAll ? 'Regenerating...' : 'Regenerate Auto'}
 			</button>
-			<button class="btn" onclick={exportDocx}>
-				Export DOCX
+			<button class="btn" onclick={exportDocx} disabled={exporting}>
+				{exporting ? 'Generating...' : 'Export DOCX'}
 			</button>
 		</div>
 	</div>
