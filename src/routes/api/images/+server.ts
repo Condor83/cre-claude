@@ -93,7 +93,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	return new Response(buffer, {
 		headers: {
 			'Content-Type': contentType,
-			'Cache-Control': 'public, max-age=86400'
+			'Cache-Control': 'no-cache'
 		}
 	});
 };

@@ -58,6 +58,7 @@ export const ALL_SECTIONS: SectionDef[] = [
 	// ── Group 3: Factual Descriptions ──
 	{ key: 'neighborhood', label: 'Neighborhood Description', group: 'factual_descriptions', tier: 'guided', approaches: ['always'] },
 	{ key: 'site_description', label: 'Site Description', group: 'factual_descriptions', tier: 'guided', approaches: ['always'] },
+	{ key: 'plat_map', label: 'Plat Map', group: 'factual_descriptions', tier: 'upload', approaches: ['always'] },
 	{ key: 'zoning', label: 'Zoning', group: 'factual_descriptions', tier: 'guided', approaches: ['always'] },
 	{ key: 'improvement_description', label: 'Improvement Description', group: 'factual_descriptions', tier: 'guided', approaches: ['always'] },
 	{ key: 'assessment_taxes', label: 'Assessment & Taxes', group: 'factual_descriptions', tier: 'auto', approaches: ['always'] },

@@ -330,9 +330,10 @@ function buildTitlePage(report: ReportData, appraiser: Record<string, string>): 
 
 // ── Image dimensions ──
 
-const FULL_WIDTH_EMU = 5_930_900; // ~6.5" in EMUs (914400 per inch)
-const GRID_WIDTH_EMU = 2_830_000; // ~3.1" in EMUs
-const MAX_HEIGHT_EMU = 4_572_000; // ~5" max height
+// ImageRun transformation expects pixels (at 96 DPI: 1 inch = 96 pixels)
+const FULL_WIDTH_PX = 624;  // ~6.5" at 96 DPI
+const GRID_WIDTH_PX = 298;  // ~3.1" at 96 DPI
+const MAX_HEIGHT_PX = 480;  // ~5" at 96 DPI
 
 function getImageDimensions(buffer: Buffer): { width: number; height: number } {
 	// Read dimensions from image header (PNG or JPEG)
@@ -381,17 +382,21 @@ function scaleToFit(
 
 function createImageParagraph(
 	buffer: Buffer,
-	maxWidthEmu: number,
+	maxWidthPx: number,
 	caption?: string | null
 ): Paragraph[] {
 	const { width, height } = getImageDimensions(buffer);
 	const aspect = height / width;
-	const fitWidth = maxWidthEmu;
+	const fitWidth = maxWidthPx;
 	const fitHeight = Math.round(fitWidth * aspect);
-	const finalHeight = Math.min(fitHeight, MAX_HEIGHT_EMU);
+	const finalHeight = Math.min(fitHeight, MAX_HEIGHT_PX);
 	const finalWidth = finalHeight < fitHeight
 		? Math.round(finalHeight / aspect)
 		: fitWidth;
+
+	// Detect image format from magic bytes
+	const isPng = buffer[0] === 0x89 && buffer[1] === 0x50;
+	const imgType = isPng ? 'png' as const : 'jpg' as const;
 
 	const paragraphs: Paragraph[] = [
 		new Paragraph({
@@ -399,7 +404,7 @@ function createImageParagraph(
 				new ImageRun({
 					data: buffer,
 					transformation: { width: finalWidth, height: finalHeight },
-					type: 'jpg'
+					type: imgType
 				})
 			],
 			alignment: AlignmentType.CENTER,
@@ -441,7 +446,7 @@ function renderSectionImages(
 		for (const img of images) {
 			if (!existsSync(img.file_path)) continue;
 			const buffer = readFileSync(img.file_path);
-			results.push(...createImageParagraph(buffer, FULL_WIDTH_EMU, img.caption));
+			results.push(...createImageParagraph(buffer, FULL_WIDTH_PX, img.caption));
 		}
 		return results;
 	}
@@ -453,10 +458,10 @@ function renderSectionImages(
 		const img2 = i + 1 < validImages.length ? validImages[i + 1] : null;
 
 		const buf1 = readFileSync(img1.file_path);
-		const cell1Content = createImageParagraph(buf1, GRID_WIDTH_EMU, img1.caption);
+		const cell1Content = createImageParagraph(buf1, GRID_WIDTH_PX, img1.caption);
 
 		const cell2Content = img2
-			? createImageParagraph(readFileSync(img2.file_path), GRID_WIDTH_EMU, img2.caption)
+			? createImageParagraph(readFileSync(img2.file_path), GRID_WIDTH_PX, img2.caption)
 			: [new Paragraph({ children: [] })];
 
 		const row = new TableRow({

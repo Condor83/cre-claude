@@ -17,12 +17,13 @@ import { geocodeAddress, type GeoResult } from './geocode.js';
 import {
 	fetchNeighborhoodMap,
 	fetchNeighborhoodAerial,
-	fetchPlatSatellite,
 	fetchCompMap,
 	type CompLocation
 } from './maps.js';
 import { fetchPropertyPhoto, fetchCompPhotos } from '$lib/scrapers/county-images.js';
 import { fetchFloodMap } from './fema.js';
+import { fetchParcelMapImages } from '$lib/scrapers/parcel-map.js';
+import { fetchZoningMap } from '$lib/scrapers/zoning-map.js';
 
 const PROJECT_ROOT = process.env.CRE_DATA_DIR || process.cwd();
 const IMAGES_DIR = join(PROJECT_ROOT, 'data', 'images');
@@ -92,6 +93,7 @@ interface PropertyInfo {
 	state: string;
 	apn: string | null;
 	county: string | null;
+	zoning: string | null;
 	latitude: number | null;
 	longitude: number | null;
 }
@@ -100,7 +102,7 @@ function getSubjectProperty(reportId: number): PropertyInfo | null {
 	const db = getDb();
 	const row = db.prepare(`
 		SELECT p.id as property_id, p.address, p.city, p.state, p.apn,
-			p.county, p.latitude, p.longitude
+			p.county, p.zoning, p.latitude, p.longitude
 		FROM reports r
 		JOIN properties p ON p.id = r.subject_property_id
 		WHERE r.id = ?
@@ -127,7 +129,7 @@ export async function autoSourceSubjectImages(reportId: number): Promise<void> {
 
 	const status: AutoSourceStatus = {
 		state: 'running',
-		total: 5, // neighborhood map, aerial, plat, property photo, flood map
+		total: 7, // neighborhood map, aerial, parcel boundary, parcel aerial, property photo, flood map, zoning map
 		completed: 0,
 		errors: [],
 		startedAt: Date.now()
@@ -165,49 +167,64 @@ export async function autoSourceSubjectImages(reportId: number): Promise<void> {
 		}
 
 		const hasCoords = lat != null && lng != null;
+		const isUtahCounty = prop.county === 'Utah' || prop.county === 'utah_county';
+		const countyType = isUtahCounty ? 'utah_county' as const : 'salt_lake_county' as const;
 
-		// Parallel fetch all images
+		// Parallel fetch all images (REST calls + Playwright screenshots run concurrently)
 		const results = await Promise.allSettled([
-			// 1. Neighborhood map (road with pin)
+			// 0. Neighborhood map (road with pin)
 			hasCoords ? fetchNeighborhoodMap(lat!, lng!) : Promise.resolve(null),
-			// 2. Neighborhood aerial (satellite)
+			// 1. Neighborhood aerial (satellite)
 			hasCoords ? fetchNeighborhoodAerial(lat!, lng!) : Promise.resolve(null),
-			// 3. Plat satellite (tight zoom)
-			hasCoords ? fetchPlatSatellite(lat!, lng!) : Promise.resolve(null),
-			// 4. Property photo from county
+			// 2. Parcel map (Playwright — returns {boundary, aerial})
+			prop.apn && isUtahCounty
+				? fetchParcelMapImages(prop.apn)
+				: Promise.resolve({ boundary: null, aerial: null }),
+			// 3. Property photo from county
 			prop.apn && prop.county
-				? fetchPropertyPhoto(
-					prop.apn,
-					prop.county === 'Utah' ? 'utah_county' : 'salt_lake_county'
-				)
+				? fetchPropertyPhoto(prop.apn, countyType)
 				: Promise.resolve(null),
-			// 5. FEMA flood map
-			hasCoords ? fetchFloodMap(lat!, lng!) : Promise.resolve(null)
+			// 4. FEMA flood map
+			hasCoords ? fetchFloodMap(lat!, lng!) : Promise.resolve(null),
+			// 5. Zoning map (REST — city-specific ArcGIS service)
+			hasCoords && prop.city
+				? fetchZoningMap(lat!, lng!, prop.city, prop.zoning)
+				: Promise.resolve(null)
 		]);
 
-		// Save results
-		const imageConfigs = [
+		// Extract parcel map results (index 2 returns an object, not a Buffer)
+		const parcelResult = results[2];
+		const parcelImages = parcelResult.status === 'fulfilled' && parcelResult.value
+			? parcelResult.value as { boundary: Buffer | null; aerial: Buffer | null }
+			: { boundary: null, aerial: null };
+
+		// Simple image configs for single-buffer results
+		const simpleConfigs = [
 			{ index: 0, section: 'neighborhood', caption: 'Neighborhood Map', sort: 0 },
 			{ index: 1, section: 'neighborhood', caption: 'Neighborhood Aerial', sort: 1 },
-			{ index: 2, section: 'site_description', caption: 'Plat Map (Satellite)', sort: 0 },
 			{ index: 3, section: 'photographs', caption: 'Subject Property Photo', sort: 0 },
-			{ index: 4, section: 'flood_map', caption: 'FEMA Flood Map', sort: 0 }
+			{ index: 4, section: 'flood_map', caption: 'FEMA Flood Map', sort: 0 },
+			{ index: 5, section: 'zoning', caption: 'Zoning Map', sort: 0 }
 		];
 
-		// Clear auto images once per section (before inserting any new ones)
-		const sectionsToSave = new Set(
-			imageConfigs
-				.filter(c => results[c.index].status === 'fulfilled' && results[c.index].value)
-				.map(c => c.section)
-		);
+		// Collect all sections that have at least one image to save
+		const sectionsToSave = new Set<string>();
+		for (const c of simpleConfigs) {
+			const r = results[c.index];
+			if (r.status === 'fulfilled' && r.value) sectionsToSave.add(c.section);
+		}
+		if (parcelImages.boundary || parcelImages.aerial) sectionsToSave.add('plat_map');
+
+		// Clear auto images once per section
 		for (const section of sectionsToSave) {
 			clearAutoImages(reportId, section);
 		}
 
-		for (const config of imageConfigs) {
+		// Save simple images
+		for (const config of simpleConfigs) {
 			const result = results[config.index];
 			if (result.status === 'fulfilled' && result.value) {
-				const filePath = saveImageBuffer(reportId, result.value);
+				const filePath = saveImageBuffer(reportId, result.value as Buffer);
 				addSectionImage(reportId, config.section, filePath, config.caption, config.sort, 'auto');
 				status.completed++;
 			} else {
@@ -216,6 +233,22 @@ export async function autoSourceSubjectImages(reportId: number): Promise<void> {
 					: `${config.caption}: not available`;
 				status.errors.push(errMsg);
 			}
+		}
+
+		// Save parcel map images (boundary + aerial)
+		if (parcelImages.boundary) {
+			const filePath = saveImageBuffer(reportId, parcelImages.boundary);
+			addSectionImage(reportId, 'plat_map', filePath, 'Parcel Map', 0, 'auto');
+			status.completed++;
+		} else {
+			status.errors.push('Parcel Map: not available');
+		}
+		if (parcelImages.aerial) {
+			const filePath = saveImageBuffer(reportId, parcelImages.aerial);
+			addSectionImage(reportId, 'plat_map', filePath, 'Plat Map (Aerial)', 1, 'auto');
+			status.completed++;
+		} else {
+			status.errors.push('Plat Map (Aerial): not available');
 		}
 
 		status.state = 'done';

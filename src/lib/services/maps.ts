@@ -54,21 +54,6 @@ export async function fetchNeighborhoodAerial(lat: number, lng: number): Promise
 	return fetchBuffer(url);
 }
 
-/**
- * Plat satellite (tight zoom). Zoom 19, 640x640.
- */
-export async function fetchPlatSatellite(lat: number, lng: number): Promise<Buffer | null> {
-	const url = buildUrl({
-		center: `${lat},${lng}`,
-		zoom: '19',
-		size: '640x640',
-		maptype: 'satellite',
-		scale: '2'
-	});
-	if (!url) return null;
-	return fetchBuffer(url);
-}
-
 // Marker label characters for comp numbering
 const LABELS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789';
 
