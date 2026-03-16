@@ -488,14 +488,16 @@
 	.gallery {
 		display: grid;
 		gap: 0.75rem;
+		max-width: 640px;
 	}
 
 	.gallery.grid-layout {
-		grid-template-columns: 1fr 1fr;
+		grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
 	}
 
 	.gallery.single-layout {
 		grid-template-columns: 1fr;
+		max-width: 360px;
 	}
 
 	/* ── Image card ── */
