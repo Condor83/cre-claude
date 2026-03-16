@@ -460,22 +460,62 @@
 		return sectionStatuses[sectionKey] === 'in_progress';
 	}
 
-	async function handleMarkReviewed(sectionKey: string) {
-		sectionStatuses[sectionKey] = 'reviewed';
+	// Approve key: for guided sections with active subsection, use dotted key
+	const approveKey = $derived(
+		isGuidedSection && activeSubsection
+			? `${activeSection}.${activeSubsection}`
+			: activeSection
+	);
+
+	const isApproved = $derived(sectionStatuses[approveKey] === 'reviewed');
+
+	async function handleMarkReviewed(key: string) {
+		sectionStatuses[key] = 'reviewed';
 		await fetch(`/reports/${data.report.id}`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ action: 'update_section_status', section_key: sectionKey, status: 'reviewed' })
+			body: JSON.stringify({ action: 'update_section_status', section_key: key, status: 'reviewed' })
 		});
+		// For subsections, update parent status based on all subs
+		if (key.includes('.')) {
+			updateParentStatus(key.split('.')[0]);
+		}
 	}
 
-	async function handleUnapprove(sectionKey: string) {
-		sectionStatuses[sectionKey] = 'in_progress';
+	async function handleUnapprove(key: string) {
+		sectionStatuses[key] = 'in_progress';
 		await fetch(`/reports/${data.report.id}`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ action: 'update_section_status', section_key: sectionKey, status: 'in_progress' })
+			body: JSON.stringify({ action: 'update_section_status', section_key: key, status: 'in_progress' })
 		});
+		// For subsections, parent can't be fully reviewed anymore
+		if (key.includes('.')) {
+			const parentKey = key.split('.')[0];
+			if (sectionStatuses[parentKey] === 'reviewed') {
+				sectionStatuses[parentKey] = 'in_progress';
+				await fetch(`/reports/${data.report.id}`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ action: 'update_section_status', section_key: parentKey, status: 'in_progress' })
+				});
+			}
+		}
+	}
+
+	async function updateParentStatus(parentKey: string) {
+		const subs = GUIDED_SUBSECTIONS[parentKey];
+		if (!subs?.length) return;
+		const allApproved = subs.every(s => sectionStatuses[`${parentKey}.${s.key}`] === 'reviewed');
+		const newStatus = allApproved ? 'reviewed' : 'in_progress';
+		if (sectionStatuses[parentKey] !== newStatus) {
+			sectionStatuses[parentKey] = newStatus;
+			await fetch(`/reports/${data.report.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'update_section_status', section_key: parentKey, status: newStatus })
+			});
+		}
 	}
 
 	function handleImageChange(key: string, imageCount: number) {
@@ -581,12 +621,12 @@
 				<span class="generating-badge">AI generating...</span>
 			{/if}
 			<div class="header-spacer"></div>
-			{#if sectionStatuses[activeSection] === 'reviewed'}
-				<button class="approved-badge" onclick={() => handleUnapprove(activeSection)}>
+			{#if isApproved}
+				<button class="approved-badge" onclick={() => handleUnapprove(approveKey)}>
 					Approved
 				</button>
 			{:else}
-				<button class="approve-btn" onclick={() => handleMarkReviewed(activeSection)}>
+				<button class="approve-btn" onclick={() => handleMarkReviewed(approveKey)}>
 					Approve
 				</button>
 			{/if}
