@@ -63,6 +63,9 @@ function mockCtx(overrides: Partial<TemplateContext> = {}): TemplateContext {
 		report_date_formatted: 'February 1, 2025',
 		effective_date_formatted: 'January 15, 2025',
 		market_data: {},
+		comp_count: 0,
+		comp_counties: [],
+		target_price_psf: null,
 		...overrides
 	};
 }

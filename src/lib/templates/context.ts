@@ -1,4 +1,4 @@
-import { getPropertyContext, getAllAppraiserSettings, getMarketData, type PropertyContext } from '$lib/db/index.js';
+import { getPropertyContext, getAllAppraiserSettings, getMarketData, getReportComps, getDb, type PropertyContext } from '$lib/db/index.js';
 
 export interface AppraiserInfo {
 	name: string;
@@ -29,6 +29,10 @@ export interface TemplateContext extends PropertyContext {
 	report_date_formatted: string;
 	effective_date_formatted: string;
 	market_data: Record<string, unknown>;
+	// Comp metadata for SCA intro/conclusion
+	comp_count: number;
+	comp_counties: string[];
+	target_price_psf: number | null;
 }
 
 const COUNTY_DISPLAY: Record<string, string> = {
@@ -109,6 +113,15 @@ export function buildTemplateContext(reportId: number): TemplateContext | null {
 		}
 	}
 
+	// Comp metadata
+	const comps = getReportComps(reportId) as Array<Record<string, unknown>>;
+	const saleComps = comps.filter(c => c.comp_type === 'sale');
+	const compCounties = [...new Set(saleComps.map(c => c.county as string).filter(Boolean))];
+
+	// Get target_price_psf from report
+	const db = getDb();
+	const reportRow = db.prepare('SELECT target_price_psf FROM reports WHERE id = ?').get(reportId) as { target_price_psf: number | null } | undefined;
+
 	return {
 		...propCtx,
 		appraiser,
@@ -118,6 +131,9 @@ export function buildTemplateContext(reportId: number): TemplateContext | null {
 		county_display: countyDisplay,
 		report_date_formatted: formatDate(propCtx.report_date),
 		effective_date_formatted: formatDate(propCtx.effective_date),
-		market_data
+		market_data,
+		comp_count: saleComps.length,
+		comp_counties: compCounties,
+		target_price_psf: reportRow?.target_price_psf ?? null
 	};
 }

@@ -20,6 +20,8 @@ import { render as title_page } from './title_page.js';
 import { render as summary_conclusions } from './summary_conclusions.js';
 import { render as highest_best_use } from './highest_best_use.js';
 import { render as special_limiting_conditions } from './special_limiting_conditions.js';
+import { render as sca_intro } from './sca_intro.js';
+import { render as sca_conclusion } from './sca_conclusion.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const AUTO_TEMPLATES: Record<string, (ctx: TemplateContext, options?: any) => string> = {
@@ -42,5 +44,7 @@ export const AUTO_TEMPLATES: Record<string, (ctx: TemplateContext, options?: any
 	title_page,
 	summary_conclusions,
 	highest_best_use,
-	special_limiting_conditions
+	special_limiting_conditions,
+	sca_intro,
+	sca_conclusion
 };
