@@ -857,6 +857,14 @@ export function listReports() {
 		.all();
 }
 
+export function deleteReport(id: number): { imagePaths: string[] } {
+	const db = getDb();
+	// Collect image file paths before CASCADE deletes them
+	const images = db.prepare('SELECT file_path FROM section_images WHERE report_id = ?').all(id) as Array<{ file_path: string }>;
+	db.prepare('DELETE FROM reports WHERE id = ?').run(id);
+	return { imagePaths: images.map(i => i.file_path) };
+}
+
 export function saveSection(
 	reportId: number,
 	sectionKey: string,

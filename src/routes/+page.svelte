@@ -1,5 +1,23 @@
 <script lang="ts">
 	let { data } = $props();
+	let reports = $state(data.reports);
+	let reportCount = $state(data.reportCount);
+
+	async function handleDelete(e: MouseEvent, reportId: number) {
+		e.preventDefault();
+		e.stopPropagation();
+		if (!confirm('Delete this report? This cannot be undone.')) return;
+
+		const res = await fetch('/reports', {
+			method: 'DELETE',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ id: reportId })
+		});
+		if (res.ok) {
+			reports = reports.filter(r => r.id !== reportId);
+			reportCount--;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -18,7 +36,7 @@
 		<span class="stat-label">Properties</span>
 	</div>
 	<div class="stat-card">
-		<span class="stat-value">{data.reportCount}</span>
+		<span class="stat-value">{reportCount}</span>
 		<span class="stat-label">Reports</span>
 	</div>
 </div>
@@ -28,17 +46,20 @@
 		<h2>Recent Reports</h2>
 		<a href="/reports/new" class="btn">+ New Report</a>
 	</div>
-	{#if data.reports.length === 0}
+	{#if reports.length === 0}
 		<p class="empty">No reports yet. <a href="/reports/new">Create your first report</a> or <a href="/ingest">upload appraisal PDFs</a> to get started.</p>
 	{:else}
 		<div class="report-list">
-			{#each data.reports as report}
+			{#each reports as report (report.id)}
 				<a href="/reports/{report.id}" class="report-card">
 					<div class="report-title">{report.subject_address}</div>
 					<div class="report-meta">
 						{report.subject_city} &middot; {report.report_number || 'Draft'} &middot;
 						<span class="status status-{report.status}">{report.status}</span>
 					</div>
+					<button class="delete-btn" onclick={(e) => handleDelete(e, report.id)} title="Delete report">
+						&times;
+					</button>
 				</a>
 			{/each}
 		</div>
@@ -150,12 +171,15 @@
 	}
 
 	.report-card {
-		display: block;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
 		padding: 0.75rem 1rem;
 		border: 1px solid #eee;
 		border-radius: 6px;
 		text-decoration: none;
 		color: inherit;
+		position: relative;
 	}
 
 	.report-card:hover {
@@ -164,14 +188,33 @@
 	}
 
 	.report-title {
-		font-weight: 600;
-		font-size: 0.95rem;
+		width: 100%;
 	}
 
 	.report-meta {
-		font-size: 0.8rem;
-		color: #888;
-		margin-top: 0.25rem;
+		flex: 1;
+	}
+
+	.delete-btn {
+		background: none;
+		border: none;
+		font-size: 1.2rem;
+		color: #ccc;
+		cursor: pointer;
+		padding: 0.2rem 0.4rem;
+		line-height: 1;
+		border-radius: 4px;
+		flex-shrink: 0;
+	}
+
+	.delete-btn:hover {
+		color: #dc3545;
+		background: #fce4ec;
+	}
+
+	.report-title {
+		font-weight: 600;
+		font-size: 0.95rem;
 	}
 
 	.doc-list {

@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createReport, findOrCreateProperty, listReports, saveSectionAutoContent } from '$lib/db/index.js';
+import { createReport, findOrCreateProperty, listReports, deleteReport, saveSectionAutoContent } from '$lib/db/index.js';
 import { buildTemplateContext } from '$lib/templates/context.js';
 import { AUTO_TEMPLATES } from '$lib/templates/sections/index.js';
 import { getSectionsForApproaches, type SectionDef } from '$lib/config/sections.js';
@@ -159,4 +159,26 @@ export const POST: RequestHandler = async ({ request }) => {
 export const GET: RequestHandler = async () => {
 	const reports = listReports();
 	return json(reports);
+};
+
+export const DELETE: RequestHandler = async ({ request }) => {
+	const { id } = await request.json();
+	if (!id || typeof id !== 'number') {
+		return json({ error: 'id is required' }, { status: 400 });
+	}
+
+	try {
+		const { imagePaths } = deleteReport(id);
+
+		// Clean up image files from disk
+		const { unlinkSync } = await import('fs');
+		for (const p of imagePaths) {
+			try { unlinkSync(p); } catch { /* already gone */ }
+		}
+
+		return json({ ok: true });
+	} catch (err) {
+		console.error('[reports DELETE]', err);
+		return json({ error: 'Failed to delete report' }, { status: 500 });
+	}
 };
