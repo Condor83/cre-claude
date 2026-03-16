@@ -56,10 +56,10 @@
 
 	function getSubsectionTierBadge(tier: string): { text: string; bg: string; fg: string } {
 		switch (tier) {
-			case 'auto': return { text: 'A', bg: '#d4edda', fg: '#155724' };
-			case 'freeform': return { text: 'E', bg: '#cce5ff', fg: '#004085' };
-			case 'form': return { text: 'F', bg: '#fff3cd', fg: '#856404' };
-			case 'image': return { text: 'I', bg: '#e8d5f5', fg: '#6f42c1' };
+			case 'auto': return { text: 'AUTO', bg: '#d4edda', fg: '#155724' };
+			case 'freeform': return { text: 'EDIT', bg: '#cce5ff', fg: '#004085' };
+			case 'form': return { text: 'FORM', bg: '#fff3cd', fg: '#856404' };
+			case 'image': return { text: 'IMG', bg: '#e8d5f5', fg: '#6f42c1' };
 			default: return { text: '', bg: 'transparent', fg: '#666' };
 		}
 	}
@@ -89,17 +89,22 @@
 		return groups;
 	});
 
-	function getStatusColor(key: string): { fill: string; stroke: string; filled: boolean } {
+	function getStatusColor(key: string, tier: string): { fill: string; stroke: string; filled: boolean } {
 		const status = sectionStatuses[key] ?? 'empty';
 		switch (status) {
 			case 'reviewed':
-				return { fill: '#28a745', stroke: '#28a745', filled: true };
+				return { fill: '#28a745', stroke: '#28a745', filled: true }; // green — approved
 			case 'auto_generated':
-				return { fill: '#007bff', stroke: '#007bff', filled: true };
 			case 'in_progress':
-				return { fill: '#f0ad4e', stroke: '#f0ad4e', filled: true };
-			default:
-				return { fill: 'none', stroke: '#999', filled: false };
+				return { fill: '#007bff', stroke: '#007bff', filled: true }; // blue — has content, not yet approved
+			default: {
+				// Empty: red for auto/guided sections (should have content), gray for prose/freeform
+				const shouldHaveContent = tier === 'auto' || tier === 'guided';
+				if (shouldHaveContent) {
+					return { fill: '#dc3545', stroke: '#dc3545', filled: true }; // red — missing content
+				}
+				return { fill: 'none', stroke: '#ccc', filled: false }; // gray outline — awaiting input
+			}
 		}
 	}
 
@@ -137,7 +142,7 @@
 			<div class="group">
 				<div class="group-header">{group.label}</div>
 				{#each group.sections as section (section.key)}
-					{@const statusInfo = getStatusColor(section.key)}
+					{@const statusInfo = getStatusColor(section.key, section.tier)}
 					{@const tierBadge = getTierBadge(section.tier)}
 					{@const isGuided = hasSubsections(section.key)}
 					{@const isExpanded = expandedSections.has(section.key)}

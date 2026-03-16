@@ -1,13 +1,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createReport, findOrCreateProperty, listReports, saveSectionAutoContent, saveSection } from '$lib/db/index.js';
+import { createReport, findOrCreateProperty, listReports, saveSectionAutoContent } from '$lib/db/index.js';
 import { buildTemplateContext } from '$lib/templates/context.js';
 import { AUTO_TEMPLATES } from '$lib/templates/sections/index.js';
-import { getSectionsForApproaches, GUIDED_SUBSECTIONS, type SectionDef } from '$lib/config/sections.js';
-import { renderSubsection } from '$lib/templates/subsections/index.js';
-import { autoSourceSubjectImages } from '$lib/services/auto-source-images.js';
-import { refreshAllDwsData, refreshUdotData, refreshMarketData } from '$lib/services/market-data.js';
-import { geocodeAddress } from '$lib/services/geocode.js';
+import { getSectionsForApproaches, type SectionDef } from '$lib/config/sections.js';
+import { createReportTasks, orchestrateReportTasks } from '$lib/services/task-tracker.js';
 
 const VALID_APPROACHES = ['sales_comparison', 'income_cap', 'cost'];
 
@@ -129,61 +126,28 @@ export const POST: RequestHandler = async ({ request }) => {
 			console.error('[reports POST] AUTO pre-population failed (non-fatal):', err);
 		}
 
-		// Fire-and-forget: auto-source subject images
-		autoSourceSubjectImages(reportId).catch(err =>
-			console.error('[auto-source] Subject images failed (non-fatal):', err)
-		);
+		// Register tasks BEFORE returning response (prevents race with SSE)
+		createReportTasks(reportId, [
+			{ id: 'geocode', label: 'Geocoding Address' },
+			{ id: 'auto_images', label: 'Sourcing Images' },
+			{ id: 'dws_population', label: 'Population Data' },
+			{ id: 'dws_employment', label: 'Employment Data' },
+			{ id: 'bebr_construction', label: 'Building Permits' },
+			{ id: 'udot_access', label: 'Traffic & Access Data' },
+			{ id: 'render_subsections', label: 'Rendering Sections' }
+		], approaches);
 
-		// Fire-and-forget: refresh all market data (DWS + UDOT) → render subsection tables
-		(async () => {
-			try {
-				// Geocode for UDOT (reuse cached coords if available)
-				let lat: number | undefined;
-				let lng: number | undefined;
-				if (property.address && property.city) {
-					const geo = await geocodeAddress(property.address, property.city, property.state || 'UT');
-					if (geo) { lat = geo.lat; lng = geo.lng; }
-				}
-
-				// Parallel: DWS (county-level) + BEBR (county-level) + UDOT (property-level)
-				const countyKey = property.county || 'utah_county';
-				await Promise.all([
-					refreshAllDwsData(countyKey),
-					refreshMarketData(countyKey, 'bebr_construction'),
-					lat && lng
-						? refreshUdotData(propertyId, lat, lng, property.address)
-						: Promise.resolve(false),
-				]);
-
-				// Re-render all auto subsections with fresh data
-				const freshCtx = buildTemplateContext(reportId);
-				if (!freshCtx) return;
-				const active = getSectionsForApproaches(approaches) as SectionDef[];
-				for (const section of active) {
-					const subs = GUIDED_SUBSECTIONS[section.key];
-					if (section.tier !== 'guided' || !subs?.length) continue;
-					const subHtmls: Record<string, string> = {};
-					for (const sub of subs) {
-						if (sub.tier === 'auto') {
-							const html = renderSubsection(sub.key, freshCtx);
-							if (html) subHtmls[sub.key] = html;
-						}
-					}
-					if (Object.keys(subHtmls).length > 0) {
-						const parentHtml = subs
-							.map(s => subHtmls[s.key] ?? '')
-							.filter(h => h.trim().length > 0)
-							.join('\n\n');
-						const formData = JSON.stringify({ _subsection_htmls: subHtmls, _subsection_form_data: {} });
-						saveSectionAutoContent(reportId, section.key, parentHtml);
-						saveSection(reportId, section.key, '', parentHtml, 'auto_generated', formData);
-					}
-				}
-				console.log('[market-data] Auto subsections rendered after data refresh');
-			} catch (err) {
-				console.error('[market-data] Data refresh failed (non-fatal):', err);
-			}
-		})();
+		// Fire async orchestration (non-blocking)
+		orchestrateReportTasks(reportId, {
+			property: {
+				address: property.address?.trim() || '',
+				city: property.city?.trim() || '',
+				state: property.state || 'UT',
+				county: property.county || undefined
+			},
+			propertyId,
+			approaches
+		});
 
 		return json({ id: reportId });
 	} catch (err) {

@@ -10,6 +10,8 @@ import { fetchWithTimeout, fetchBuffer } from '$lib/services/fetch-utils.js';
 // Utah County photo URL pattern — photos are linked from the appraisal page
 const UTAH_COUNTY_APPRAISAL_URL = 'https://www.utahcounty.gov/LandRecords/AppraisalInfo.asp';
 const UTAH_COUNTY_BASE = 'https://www.utahcounty.gov';
+// CAMA CDN fallback — predictable URL pattern for parcels not on the assessor page
+const UTAH_COUNTY_CAMA_CDN = 'https://utahcamastorage.blob.core.windows.net/media2/images';
 
 /**
  * Fetch property photo for a single parcel from the county assessor.
@@ -114,6 +116,12 @@ async function fetchUtahCountyPhoto(serial: string): Promise<Buffer | null> {
 			return null;
 		}
 
+		// Skip known "not available" placeholder paths
+		if (photoUrl.toLowerCase().includes('houseimages/na/')) {
+			console.log(`[county-images] Photo is "not available" placeholder for ${serial}`);
+			return null;
+		}
+
 		// Resolve relative URL and enforce origin allowlist (SSRF prevention)
 		let resolvedUrl: string = photoUrl;
 		if (resolvedUrl.startsWith('/')) {
@@ -128,9 +136,38 @@ async function fetchUtahCountyPhoto(serial: string): Promise<Buffer | null> {
 		}
 
 		console.log(`[county-images] Found photo URL for ${serial}: ${resolvedUrl}`);
-		return fetchBuffer(resolvedUrl, 10000);
+		const buf = await fetchBuffer(resolvedUrl, 10000);
+
+		// Reject tiny responses (HTML error pages, placeholder stubs)
+		if (buf && buf.length < 5000) {
+			console.log(`[county-images] Photo too small (${buf.length}B), likely placeholder for ${serial}`);
+			return fetchUtahCountyCdnPhoto(serial);
+		}
+		return buf;
 	} catch (err) {
 		console.log(`[county-images] Failed to fetch photo for ${serial}:`, err);
+		return fetchUtahCountyCdnPhoto(serial);
+	}
+}
+
+/**
+ * Fallback: fetch property photo from CAMA CDN using predictable URL pattern.
+ * Works for parcels where the assessor page has no photo.
+ */
+async function fetchUtahCountyCdnPhoto(serial: string): Promise<Buffer | null> {
+	const parcelId = serial.replace(/:/g, '');
+	const url = `${UTAH_COUNTY_CAMA_CDN}/${parcelId}_parcel_p_parcel.jpg`;
+
+	try {
+		const buf = await fetchBuffer(url, 10000);
+		if (buf && buf.length > 5000) {
+			console.log(`[county-images] CDN fallback photo for ${serial}: ${(buf.length / 1024).toFixed(0)}KB`);
+			return buf;
+		}
+		console.log(`[county-images] CDN fallback had no photo for ${serial}`);
+		return null;
+	} catch {
+		console.log(`[county-images] CDN fallback failed for ${serial}`);
 		return null;
 	}
 }

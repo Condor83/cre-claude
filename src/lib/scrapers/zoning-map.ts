@@ -2,17 +2,38 @@
  * City zoning map service.
  * Composites semi-transparent color-filled zoning overlays on satellite imagery
  * via ArcGIS REST exports + sharp image compositing.
- * Currently supports Orem. Other cities: log warning, return null.
+ *
+ * Two service patterns:
+ * - City-hosted MapServer (Orem): dedicated export endpoint, LABEL field
+ * - County MapServer (Utah County): shared server with per-city layers
  */
 
 import sharp from 'sharp';
 import { fetchBuffer } from '$lib/services/fetch-utils.js';
 
-// City-specific zoning MapServer endpoints
-const ZONING_SERVICES: Record<string, { export: string; queryLayer: number }> = {
+interface ZoningService {
+	/** MapServer export URL */
+	export: string;
+	/** Layer number for zone code queries */
+	queryLayer: number;
+	/** Field name containing zone label (default: 'LABEL') */
+	labelField?: string;
+	/** For county server: layers param to isolate this city's zones */
+	layers?: string;
+}
+
+const UTAH_COUNTY_SERVER = 'https://maps.utahcounty.gov/arcgis/rest/services/Assessor/CommercialAppraiser/MapServer';
+
+const ZONING_SERVICES: Record<string, ZoningService> = {
 	'Orem': {
 		export: 'https://maps.orem.org/arcgis/rest/services/ZoningAndOverlays/MapServer/export',
 		queryLayer: 1
+	},
+	'Payson': {
+		export: `${UTAH_COUNTY_SERVER}/export`,
+		queryLayer: 31,
+		labelField: 'ZONE_PA_LABEL',
+		layers: 'show:31'
 	}
 };
 
@@ -43,22 +64,27 @@ async function queryZoneCode(lat: number, lng: number, city: string): Promise<st
 	if (!service) return null;
 
 	try {
-		const baseUrl = service.export.replace('/export', `/${service.queryLayer}/query`);
+		// Build query URL: county server uses layer ID directly, city server derives from export URL
+		const queryUrl = service.layers
+			? `${service.export.replace('/export', `/${service.queryLayer}/query`)}`
+			: `${service.export.replace('/export', `/${service.queryLayer}/query`)}`;
+		const labelField = service.labelField || 'LABEL';
+
 		const params = new URLSearchParams({
 			geometry: `${lng},${lat}`,
 			geometryType: 'esriGeometryPoint',
 			inSR: '4326',
 			spatialRel: 'esriSpatialRelIntersects',
-			outFields: 'LABEL',
+			outFields: labelField,
 			returnGeometry: 'false',
 			f: 'json'
 		});
 
-		const res = await fetch(`${baseUrl}?${params}`);
+		const res = await fetch(`${queryUrl}?${params}`);
 		if (!res.ok) return null;
 
-		const data = await res.json() as { features?: Array<{ attributes?: { LABEL?: string } }> };
-		const label = data.features?.[0]?.attributes?.LABEL;
+		const data = await res.json() as { features?: Array<{ attributes?: Record<string, string> }> };
+		const label = data.features?.[0]?.attributes?.[labelField];
 		if (label) {
 			console.log(`[zoning-map] Zone query for ${city}: ${label}`);
 			return label;
@@ -105,9 +131,12 @@ export async function fetchZoningMap(
 		console.log(`[zoning-map] Fetching satellite + zoning for ${city} at ${lat}, ${lng}`);
 
 		// Fetch satellite basemap and transparent zoning overlay in parallel
+		const zoningParams: Record<string, string> = { ...commonParams, transparent: 'true' };
+		if (service.layers) zoningParams.layers = service.layers;
+
 		const [satelliteBuf, zoningBuf] = await Promise.all([
 			fetchBuffer(`${SATELLITE_URL}?${new URLSearchParams({ ...commonParams, transparent: 'false' })}`, 15000),
-			fetchBuffer(`${service.export}?${new URLSearchParams({ ...commonParams, transparent: 'true' })}`, 15000)
+			fetchBuffer(`${service.export}?${new URLSearchParams(zoningParams)}`, 15000)
 		]);
 
 		if (!satelliteBuf) {

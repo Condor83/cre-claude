@@ -6,7 +6,8 @@ import { generateSectionText } from '$lib/copilot/writer.js';
 import { buildTemplateContext } from '$lib/templates/context.js';
 import { AUTO_TEMPLATES } from '$lib/templates/sections/index.js';
 import { renderSubsection } from '$lib/templates/subsections/index.js';
-import { getSectionsForApproaches, GUIDED_SUBSECTIONS, type SectionDef } from '$lib/config/sections.js';
+import { getSectionsForApproaches, type SectionDef } from '$lib/config/sections.js';
+import { renderAllAutoSubsections } from '$lib/templates/subsections/render-all.js';
 
 // Save section content (autosave endpoint)
 export const PUT: RequestHandler = async ({ params, request }) => {
@@ -112,50 +113,12 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 				saveSection(reportId, section.key, '', html, 'auto_generated');
 				updated[section.key] = html;
 			}
-
-			// Also regenerate auto subsections for guided sections
-			const subsections = GUIDED_SUBSECTIONS[section.key];
-			if (section.tier === 'guided' && subsections?.length) {
-				const existing = db.prepare('SELECT form_data FROM report_sections WHERE report_id = ? AND section_key = ?').get(reportId, section.key) as { form_data: string | null } | undefined;
-				let existingFormData: Record<string, unknown> = {};
-				if (existing?.form_data) {
-					try { existingFormData = JSON.parse(existing.form_data); } catch { /* ignore */ }
-				}
-
-				const subHtmls: Record<string, string> = (existingFormData._subsection_htmls as Record<string, string>) ?? {};
-				const subFormData: Record<string, Record<string, unknown>> = (existingFormData._subsection_form_data as Record<string, Record<string, unknown>>) ?? {};
-
-				let changed = false;
-				for (const sub of subsections) {
-					if (sub.tier === 'auto') {
-						const subOptions = subFormData[sub.key];
-						const html = renderSubsection(sub.key, ctx, subOptions);
-						if (html != null) {
-							subHtmls[sub.key] = html;
-							changed = true;
-						} else {
-							console.warn(`[regenerate] No template for subsection ${sub.key} in ${section.key}`);
-						}
-					}
-				}
-
-				if (changed) {
-					// Rebuild parent content_html
-					const parentHtml = subsections
-						.map(s => subHtmls[s.key] ?? '')
-						.filter(h => h.trim().length > 0)
-						.join('\n\n');
-
-					const formDataStr = JSON.stringify({
-						_subsection_htmls: subHtmls,
-						_subsection_form_data: subFormData
-					});
-
-					saveSection(reportId, section.key, '', parentHtml, 'auto_generated', formDataStr);
-					updated[section.key] = parentHtml;
-				}
-			}
 		}
+
+		// Regenerate all guided section auto-subsections via shared renderer
+		const guidedResult = renderAllAutoSubsections(reportId, approaches);
+		Object.assign(updated, guidedResult.updated);
+
 		return json({ ok: true, count: Object.keys(updated).length, updated });
 	}
 

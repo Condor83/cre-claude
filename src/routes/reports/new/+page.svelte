@@ -236,7 +236,7 @@
 
 			if (res.ok) {
 				const data = await res.json();
-				goto(`/reports/${data.id}`);
+				goto(`/reports/${data.id}/loading`);
 			} else {
 				const err = await res.json().catch(() => null);
 				createError = err?.error || 'Failed to create report';

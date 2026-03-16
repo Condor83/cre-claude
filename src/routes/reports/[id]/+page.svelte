@@ -190,7 +190,7 @@
 		}
 	}
 
-	// ── Auto-source progress polling ──
+	// ── Comp image polling (subject images now handled via loading screen) ──
 	interface AutoSourceStatus {
 		state: 'idle' | 'running' | 'done' | 'error';
 		total: number;
@@ -198,52 +198,47 @@
 		errors: string[];
 	}
 	let autoSourceStatus = $state<AutoSourceStatus | null>(null);
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let compPollTimer: ReturnType<typeof setInterval> | null = null;
 
-	function startPolling(type: 'subject' | 'comps') {
-		stopPolling();
-		pollTimer = setInterval(async () => {
-			const res = await fetch(`/api/auto-source?report_id=${data.report.id}&type=${type}`);
+	function startCompPolling() {
+		stopCompPolling();
+		compPollTimer = setInterval(async () => {
+			const res = await fetch(`/api/auto-source?report_id=${data.report.id}&type=comps`);
 			if (res.ok) {
 				const status = await res.json();
 				autoSourceStatus = status;
 				if (status.state === 'done' || status.state === 'error' || status.state === 'idle') {
-					stopPolling();
+					stopCompPolling();
 					if (status.state === 'done') {
-						// Reload images
 						const imgRes = await fetch(`/api/images?report_id=${data.report.id}&section_key=_all`);
-						if (imgRes.ok) {
-							// Just reload the page to pick up new images
-							window.location.reload();
-						}
+						if (imgRes.ok) window.location.reload();
 					}
-					if (type === 'comps') fetchingCompImages = false;
+					fetchingCompImages = false;
 				}
 			}
 		}, 3000);
 	}
 
-	function stopPolling() {
-		if (pollTimer) {
-			clearInterval(pollTimer);
-			pollTimer = null;
+	function stopCompPolling() {
+		if (compPollTimer) {
+			clearInterval(compPollTimer);
+			compPollTimer = null;
 		}
 	}
 
-	// Start polling for subject images on mount (they start on report creation)
+	// Loading guard: check if tasks are still running
+	let tasksStillRunning = $state(false);
 	$effect(() => {
-		// Check if auto-sourcing is in progress
-		fetch(`/api/auto-source?report_id=${data.report.id}&type=subject`)
+		fetch(`/api/report-tasks/${data.report.id}`)
 			.then(r => r.json())
-			.then(status => {
-				if (status.state === 'running') {
-					autoSourceStatus = status;
-					startPolling('subject');
+			.then(result => {
+				if (result.tasks && !result.settled) {
+					tasksStillRunning = true;
 				}
 			})
 			.catch(() => {});
 
-		return () => stopPolling();
+		return () => stopCompPolling();
 	});
 
 	async function handleFetchCompImages() {
@@ -255,7 +250,7 @@
 				body: JSON.stringify({ report_id: data.report.id })
 			});
 			if (res.ok) {
-				startPolling('comps');
+				startCompPolling();
 			} else {
 				const err = await res.json();
 				alert(err.error || 'Failed to start comp image sourcing');
@@ -537,10 +532,15 @@
 			onselect={handleSelectSection}
 			onselectsubsection={handleSelectSubsection}
 		/>
+		{#if tasksStillRunning}
+			<a href="/reports/{data.report.id}/loading" class="loading-banner">
+				Report still loading — view progress
+			</a>
+		{/if}
 		{#if autoSourceStatus?.state === 'running'}
 			<div class="auto-source-indicator">
 				<span class="auto-source-dot"></span>
-				Sourcing images... {autoSourceStatus.completed}/{autoSourceStatus.total}
+				Fetching comp images... {autoSourceStatus.completed}/{autoSourceStatus.total}
 			</div>
 		{/if}
 		<div class="sidebar-actions">
@@ -570,6 +570,14 @@
 			{/if}
 			{#if generating}
 				<span class="generating-badge">AI generating...</span>
+			{/if}
+			<div class="header-spacer"></div>
+			{#if sectionStatuses[activeSection] === 'reviewed'}
+				<span class="approved-badge">Approved</span>
+			{:else}
+				<button class="approve-btn" onclick={() => handleMarkReviewed(activeSection)}>
+					Approve
+				</button>
 			{/if}
 		</div>
 
@@ -619,7 +627,7 @@
 						<button class="overview-item" onclick={() => { activeSubsection = sub.key; }}>
 							<span class="overview-label">{sub.label}</span>
 							<span class="overview-tier" class:auto={sub.tier === 'auto'} class:freeform={sub.tier === 'freeform'} class:form={sub.tier === 'form'} class:image={sub.tier === 'image'}>
-								{sub.tier.toUpperCase()}
+								{sub.tier === 'freeform' ? 'EDIT' : sub.tier === 'image' ? 'IMG' : sub.tier.toUpperCase()}
 							</span>
 						</button>
 					{/each}
@@ -799,6 +807,36 @@
 		animation: pulse 1.5s infinite;
 	}
 
+	.header-spacer {
+		flex: 1;
+	}
+
+	.approve-btn {
+		padding: 0.3rem 0.8rem;
+		background: #e8f5e9;
+		color: #2e7d32;
+		border: 1px solid #a5d6a7;
+		border-radius: 4px;
+		font-size: 0.8rem;
+		font-weight: 500;
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+
+	.approve-btn:hover {
+		background: #c8e6c9;
+	}
+
+	.approved-badge {
+		padding: 0.3rem 0.8rem;
+		background: #28a745;
+		color: #fff;
+		border-radius: 4px;
+		font-size: 0.75rem;
+		font-weight: 600;
+		flex-shrink: 0;
+	}
+
 	@keyframes pulse {
 		0%, 100% { opacity: 1; }
 		50% { opacity: 0.6; }
@@ -935,6 +973,23 @@
 		margin-top: 1.5rem;
 		padding-top: 1rem;
 		border-top: 1px solid #eee;
+	}
+
+	.loading-banner {
+		display: block;
+		padding: 0.5rem 0.75rem;
+		background: #fff3cd;
+		border: 1px solid #ffe082;
+		border-radius: 6px;
+		font-size: 0.8rem;
+		color: #8d6e00;
+		text-decoration: none;
+		text-align: center;
+		margin-bottom: 0.5rem;
+	}
+
+	.loading-banner:hover {
+		background: #fff8e1;
 	}
 
 	.auto-source-indicator {
