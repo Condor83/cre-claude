@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createReport, findOrCreateProperty, listReports, deleteReport, saveSectionAutoContent } from '$lib/db/index.js';
+import { createReport, findOrCreateProperty, listReports, deleteReport, saveSectionAutoContent, addReportComp, getDb } from '$lib/db/index.js';
+import { renderCompDesc } from '$lib/templates/comp_desc.js';
 import { buildTemplateContext } from '$lib/templates/context.js';
 import { AUTO_TEMPLATES } from '$lib/templates/sections/index.js';
 import { getSectionsForApproaches, type SectionDef } from '$lib/config/sections.js';
@@ -23,7 +24,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	// Wizard path: property object + report config
-	const { property, report_number, effective_date, client_name, intended_use, property_rights, approaches } = body;
+	const { property, report_number, effective_date, client_name, intended_use, property_rights, approaches, target_price_psf, selected_comp_ids } = body;
 
 	// Validate property fields — require either (address + city) or apn
 	const hasAddress = property?.address && typeof property.address === 'string' && property.address.trim() !== '';
@@ -105,10 +106,63 @@ export const POST: RequestHandler = async ({ request }) => {
 			effective_date: effective_date || undefined,
 			client_name: client_name || undefined,
 			intended_use: intended_use || undefined,
-			property_rights: property_rights || undefined
+			property_rights: property_rights || undefined,
+			target_price_psf: target_price_psf ? Number(target_price_psf) : undefined
 		});
 
 		const reportId = Number(result.lastInsertRowid);
+
+		// Pre-add selected comps from wizard suggestions (with auto-rendered templates)
+		if (selected_comp_ids?.length > 0) {
+			const db = getDb();
+			for (let i = 0; i < selected_comp_ids.length; i++) {
+				const propId = Number(selected_comp_ids[i]);
+				if (propId <= 0) continue;
+
+				const prop = db.prepare('SELECT * FROM properties WHERE id = ?').get(propId) as Record<string, unknown> | undefined;
+
+				// Auto-find latest sale for this property
+				const latestSale = db.prepare('SELECT * FROM sales WHERE property_id = ? ORDER BY sale_date DESC LIMIT 1').get(propId) as Record<string, unknown> | undefined;
+
+				let contentHtml = '';
+				let formData = '';
+				if (prop) {
+					const descHtml = renderCompDesc({
+						address: prop.address as string,
+						city: prop.city as string | null,
+						county: prop.county as string | null,
+						property_type: prop.property_type as string | null,
+						building_sf: prop.building_sf as number | null,
+						land_sf: prop.land_sf as number | null,
+						land_acres: prop.land_acres as number | null,
+						year_built: prop.year_built as number | null,
+						stories: prop.stories as number | null,
+						construction_class: prop.construction_class as string | null,
+						quality: prop.quality as string | null,
+						condition: prop.condition as string | null,
+						zoning: prop.zoning as string | null,
+						owner_name: prop.owner_name as string | null,
+						county_data_json: prop.county_data_json as string | null,
+						sale_price: latestSale?.sale_price as number | null ?? null,
+						sale_date: latestSale?.sale_date as string | null ?? null,
+						grantor: latestSale?.grantor as string | null ?? null,
+						grantee: latestSale?.grantee as string | null ?? null
+					});
+					formData = JSON.stringify({ _subsection_htmls: { comp_desc: descHtml }, _subsection_form_data: {} });
+					contentHtml = descHtml;
+				}
+
+				addReportComp({
+					report_id: reportId,
+					comp_type: 'sale',
+					property_id: propId,
+					sale_id: latestSale?.id as number | undefined,
+					rank: i + 1,
+					content_html: contentHtml,
+					form_data: formData
+				});
+			}
+		}
 
 		// Pre-populate AUTO sections
 		try {
