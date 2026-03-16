@@ -469,6 +469,15 @@
 		});
 	}
 
+	async function handleUnapprove(sectionKey: string) {
+		sectionStatuses[sectionKey] = 'in_progress';
+		await fetch(`/reports/${data.report.id}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ action: 'update_section_status', section_key: sectionKey, status: 'in_progress' })
+		});
+	}
+
 	function handleImageChange(key: string, imageCount: number) {
 		sectionStatuses[key] = imageCount > 0 ? 'reviewed' : 'empty';
 	}
@@ -573,7 +582,9 @@
 			{/if}
 			<div class="header-spacer"></div>
 			{#if sectionStatuses[activeSection] === 'reviewed'}
-				<span class="approved-badge">Approved</span>
+				<button class="approved-badge" onclick={() => handleUnapprove(activeSection)}>
+					Approved
+				</button>
 			{:else}
 				<button class="approve-btn" onclick={() => handleMarkReviewed(activeSection)}>
 					Approve
@@ -831,10 +842,17 @@
 		padding: 0.3rem 0.8rem;
 		background: #28a745;
 		color: #fff;
+		border: 1px solid #28a745;
 		border-radius: 4px;
 		font-size: 0.75rem;
 		font-weight: 600;
 		flex-shrink: 0;
+		cursor: pointer;
+	}
+
+	.approved-badge:hover {
+		background: #dc3545;
+		border-color: #dc3545;
 	}
 
 	@keyframes pulse {
