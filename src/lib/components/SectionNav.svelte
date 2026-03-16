@@ -180,11 +180,15 @@
 						<div class="subsection-list" class:collapsed={!isExpanded}>
 							{#each getSubsections(section.key) as sub (sub.key)}
 								{@const subBadge = getSubsectionTierBadge(sub.tier)}
+								{@const subStatus = getStatusColor(`${section.key}.${sub.key}`, sub.tier)}
 								<button
 									class="nav-sub-item"
 									class:active={activeSection === section.key && activeSubsection === sub.key}
 									onclick={() => onselectsubsection(section.key, sub.key)}
 								>
+									<svg class="status-dot" width="6" height="6" viewBox="0 0 6 6" aria-hidden="true">
+										<circle cx="3" cy="3" r="2.5" fill={subStatus.fill} stroke={subStatus.stroke} stroke-width="1" />
+									</svg>
 									<span class="sub-label">{sub.label}</span>
 									{#if subBadge.text}
 										<span
