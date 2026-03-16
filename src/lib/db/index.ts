@@ -3,6 +3,7 @@ import * as sqliteVec from 'sqlite-vec';
 import { createHash } from 'crypto';
 import { readFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { COMP_SUBSECTIONS } from '$lib/config/sections.js';
 
 // Project root — works both in dev (process.cwd) and built mode
 const PROJECT_ROOT = process.env.CRE_DATA_DIR || process.cwd();
@@ -321,6 +322,23 @@ function migrateMarketDataUnique(db: Database.Database): void {
 	}
 }
 
+// ── Schema migration: add content_html/form_data to report_comps + target_price_psf to reports ──
+
+function migrateCompContentColumns(db: Database.Database): void {
+	const cols = db.prepare("PRAGMA table_info(report_comps)").all() as Array<{name: string}>;
+	const colNames = cols.map(c => c.name);
+
+	if (!colNames.includes('content_html')) {
+		db.exec('ALTER TABLE report_comps ADD COLUMN content_html TEXT');
+		db.exec('ALTER TABLE report_comps ADD COLUMN form_data TEXT');
+	}
+
+	const rCols = db.prepare("PRAGMA table_info(reports)").all() as Array<{name: string}>;
+	if (!rCols.map(c => c.name).includes('target_price_psf')) {
+		db.exec('ALTER TABLE reports ADD COLUMN target_price_psf REAL');
+	}
+}
+
 export function getDb(): Database.Database {
 	if (_db) return _db;
 
@@ -363,6 +381,9 @@ export function getDb(): Database.Database {
 
 	// Migrate market_data (UNIQUE constraint)
 	migrateMarketDataUnique(_db);
+
+	// Migrate report_comps (content_html, form_data) + reports (target_price_psf)
+	migrateCompContentColumns(_db);
 
 	// Re-run schema to ensure all indexes exist (idempotent after migration)
 	_db.exec(schema);
@@ -810,11 +831,12 @@ export function createReport(report: {
 	client_name?: string;
 	intended_use?: string;
 	property_rights?: string;
+	target_price_psf?: number;
 }) {
 	const db = getDb();
 	const stmt = db.prepare(`
-		INSERT INTO reports (report_number, subject_property_id, approach, effective_date, client_name, intended_use, property_rights)
-		VALUES (@report_number, @subject_property_id, @approach, @effective_date, @client_name, @intended_use, @property_rights)
+		INSERT INTO reports (report_number, subject_property_id, approach, effective_date, client_name, intended_use, property_rights, target_price_psf)
+		VALUES (@report_number, @subject_property_id, @approach, @effective_date, @client_name, @intended_use, @property_rights, @target_price_psf)
 	`);
 	return stmt.run({
 		report_number: report.report_number ?? null,
@@ -823,7 +845,8 @@ export function createReport(report: {
 		effective_date: report.effective_date ?? null,
 		client_name: report.client_name ?? null,
 		intended_use: report.intended_use ?? 'estimate market value',
-		property_rights: report.property_rights ?? 'fee simple'
+		property_rights: report.property_rights ?? 'fee simple',
+		target_price_psf: report.target_price_psf ?? null
 	});
 }
 
@@ -943,11 +966,13 @@ export function addReportComp(comp: {
 	rank?: number;
 	adjustment_json?: string;
 	analysis_text?: string;
+	content_html?: string;
+	form_data?: string;
 }) {
 	const db = getDb();
 	const stmt = db.prepare(`
-		INSERT INTO report_comps (report_id, comp_type, property_id, sale_id, lease_id, rank, adjustment_json, analysis_text)
-		VALUES (@report_id, @comp_type, @property_id, @sale_id, @lease_id, @rank, @adjustment_json, @analysis_text)
+		INSERT INTO report_comps (report_id, comp_type, property_id, sale_id, lease_id, rank, adjustment_json, analysis_text, content_html, form_data)
+		VALUES (@report_id, @comp_type, @property_id, @sale_id, @lease_id, @rank, @adjustment_json, @analysis_text, @content_html, @form_data)
 	`);
 	return stmt.run({
 		report_id: comp.report_id,
@@ -957,7 +982,9 @@ export function addReportComp(comp: {
 		lease_id: comp.lease_id ?? null,
 		rank: comp.rank ?? null,
 		adjustment_json: comp.adjustment_json ?? null,
-		analysis_text: comp.analysis_text ?? null
+		analysis_text: comp.analysis_text ?? null,
+		content_html: comp.content_html ?? null,
+		form_data: comp.form_data ?? null
 	});
 }
 
@@ -967,8 +994,11 @@ export function getReportComps(reportId: number) {
 		.prepare(
 			`
 		SELECT rc.*, p.address, p.city, p.building_sf, p.year_built, p.property_type,
-			p.latitude, p.longitude, p.apn, p.county,
+			p.latitude, p.longitude, p.apn, p.county, p.county_data_json,
+			p.land_sf, p.land_acres, p.zoning, p.construction_class, p.quality, p.condition,
+			p.stories, p.owner_name, p.market_value,
 			s.sale_date, s.sale_price, s.price_per_sf, s.cap_rate as sale_cap_rate,
+			s.grantor, s.grantee, s.financing, s.confidence as sale_confidence,
 			l.tenant_name, l.rent_per_sf, l.lease_type, l.mls_sourced as lease_mls_sourced,
 			s.mls_sourced as sale_mls_sourced
 		FROM report_comps rc
@@ -980,6 +1010,65 @@ export function getReportComps(reportId: number) {
 	`
 		)
 		.all(reportId);
+}
+
+export function removeReportComp(compId: number, reportId: number) {
+	const db = getDb();
+	const comp = db.prepare('SELECT rank, comp_type FROM report_comps WHERE id = ? AND report_id = ?').get(compId, reportId) as { rank: number; comp_type: string } | undefined;
+	if (!comp) return;
+
+	db.prepare('DELETE FROM report_comps WHERE id = ? AND report_id = ?').run(compId, reportId);
+
+	// Shift ranks down for remaining comps of same type
+	db.prepare(`
+		UPDATE report_comps SET rank = rank - 1
+		WHERE report_id = ? AND comp_type = ? AND rank > ?
+	`).run(reportId, comp.comp_type, comp.rank);
+}
+
+export function reorderReportComps(reportId: number, compType: string, orderedIds: number[]) {
+	const db = getDb();
+	const stmt = db.prepare('UPDATE report_comps SET rank = ? WHERE id = ? AND report_id = ?');
+	const transaction = db.transaction((ids: number[]) => {
+		ids.forEach((id, index) => {
+			stmt.run(index + 1, id, reportId);
+		});
+	});
+	transaction(orderedIds);
+}
+
+export function saveCompSubsection(compId: number, subsectionKey: string, html: string, formData?: Record<string, unknown>) {
+	const db = getDb();
+	const comp = db.prepare('SELECT form_data, content_html FROM report_comps WHERE id = ?').get(compId) as { form_data: string | null; content_html: string | null } | undefined;
+	if (!comp) return;
+
+	let fd: Record<string, unknown> = {};
+	if (comp.form_data) {
+		try { fd = JSON.parse(comp.form_data); } catch { /* ignore */ }
+	}
+
+	// Update subsection HTMLs
+	if (!fd._subsection_htmls) fd._subsection_htmls = {};
+	(fd._subsection_htmls as Record<string, string>)[subsectionKey] = html;
+
+	// Update subsection form data if provided
+	if (formData) {
+		if (!fd._subsection_form_data) fd._subsection_form_data = {};
+		(fd._subsection_form_data as Record<string, unknown>)[subsectionKey] = formData;
+	}
+
+	// Rebuild content_html from all subsections in order
+	const COMP_SUB_ORDER = COMP_SUBSECTIONS.map(s => s.key);
+	const subsectionHtmls = fd._subsection_htmls as Record<string, string>;
+	const contentHtml = COMP_SUB_ORDER
+		.map((key: string) => subsectionHtmls[key] ?? '')
+		.filter((h: string) => h.trim().length > 0)
+		.join('\n\n');
+
+	db.prepare('UPDATE report_comps SET form_data = ?, content_html = ? WHERE id = ?')
+		.run(JSON.stringify(fd), contentHtml, compId);
+
+	return contentHtml;
 }
 
 // ── Shared property context (used by templates + copilot) ──

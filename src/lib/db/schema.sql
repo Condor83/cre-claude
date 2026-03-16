@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS reports (
   client_name TEXT,
   intended_use TEXT DEFAULT 'estimate market value',
   property_rights TEXT DEFAULT 'fee simple',
+  target_price_psf REAL,
   status TEXT DEFAULT 'draft' CHECK(status IN ('draft', 'review', 'final')),
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -159,7 +160,9 @@ CREATE TABLE IF NOT EXISTS report_comps (
   lease_id INTEGER REFERENCES leases(id),
   rank INTEGER,
   adjustment_json TEXT,
-  analysis_text TEXT
+  analysis_text TEXT,
+  content_html TEXT,
+  form_data TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_comps_report ON report_comps(report_id);
 

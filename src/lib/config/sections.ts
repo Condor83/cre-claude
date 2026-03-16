@@ -1,6 +1,6 @@
 // Section configuration: ~35 sections across 5 groups with tier-based rendering
 
-export type SectionTier = 'auto' | 'guided' | 'prose' | 'images' | 'upload';
+export type SectionTier = 'auto' | 'guided' | 'prose' | 'images' | 'upload' | 'comps';
 
 export type SectionGroup =
 	| 'front_matter'
@@ -18,6 +18,7 @@ export interface SectionDef {
 	tier: SectionTier;
 	approaches: ('always' | 'sales_comparison' | 'income_cap' | 'cost')[];
 	docxOnly?: boolean;
+	comp_type?: 'sale' | 'lease';
 }
 
 export const GROUP_LABELS: Record<SectionGroup, string> = {
@@ -66,8 +67,8 @@ export const ALL_SECTIONS: SectionDef[] = [
 	{ key: 'highest_best_use', label: 'Highest & Best Use', group: 'valuation', tier: 'auto', approaches: ['always'] },
 	{ key: 'highest_best_use_analysis', label: 'Highest & Best Use Analysis', group: 'valuation', tier: 'prose', approaches: ['always'] },
 	{ key: 'valuation_process', label: 'Valuation Process', group: 'valuation', tier: 'auto', approaches: ['always'] },
-	{ key: 'sales_comparison', label: 'Sales Comparison Approach', group: 'valuation', tier: 'prose', approaches: ['sales_comparison'] },
-	{ key: 'income_approach', label: 'Income Capitalization Approach', group: 'valuation', tier: 'prose', approaches: ['income_cap'] },
+	{ key: 'sales_comparison', label: 'Sales Comparison Approach', group: 'valuation', tier: 'comps', comp_type: 'sale', approaches: ['sales_comparison'] },
+	{ key: 'income_approach', label: 'Income Capitalization Approach', group: 'valuation', tier: 'comps', comp_type: 'lease', approaches: ['income_cap'] },
 	{ key: 'cost_approach', label: 'Cost Approach', group: 'valuation', tier: 'prose', approaches: ['cost'] },
 	{ key: 'reconciliation', label: 'Reconciliation', group: 'valuation', tier: 'prose', approaches: ['always'] },
 	{ key: 'certification', label: 'Certification', group: 'valuation', tier: 'auto', approaches: ['always'] },
@@ -180,6 +181,16 @@ export const GUIDED_SUBSECTIONS: Record<string, SubsectionDef[]> = {
 		{ key: 'improvement_floor_plans', label: 'Floor Plans / Elevations', tier: 'image' }
 	]
 };
+
+// ── COMP section subsection templates ──
+// Each comp rendered under a tier='comps' section gets these subsections
+export const COMP_SUBSECTIONS: SubsectionDef[] = [
+	{ key: 'comp_desc', label: 'Property Description', tier: 'auto' },
+	{ key: 'comp_photo', label: 'Photo', tier: 'image' },
+	{ key: 'comp_sale', label: 'Sale Summary', tier: 'form' },
+	{ key: 'comp_rationale', label: 'Adjustment Rationale', tier: 'freeform', placeholder: 'Describe adjustments applied to this comparable...' },
+	{ key: 'comp_map', label: 'Location Map', tier: 'image' }
+];
 
 // ── Derived lookups (computed once at import time) ──
 

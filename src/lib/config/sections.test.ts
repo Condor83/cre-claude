@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ALL_SECTIONS, getSectionsForApproaches, SECTION_TYPE_MAP, SECTION_LABEL_MAP, DEFAULT_APPROACHES } from './sections.js';
+import { ALL_SECTIONS, getSectionsForApproaches, SECTION_TYPE_MAP, SECTION_LABEL_MAP, SECTION_MAP, COMP_SUBSECTIONS, DEFAULT_APPROACHES } from './sections.js';
 
 describe('ALL_SECTIONS', () => {
 	it('has 38 sections', () => {
@@ -58,13 +58,41 @@ describe('getSectionsForApproaches', () => {
 	});
 });
 
+describe('comps tier', () => {
+	it('sales_comparison has tier comps with comp_type sale', () => {
+		const sca = SECTION_MAP['sales_comparison'];
+		expect(sca.tier).toBe('comps');
+		expect(sca.comp_type).toBe('sale');
+	});
+
+	it('income_approach has tier comps with comp_type lease', () => {
+		const inc = SECTION_MAP['income_approach'];
+		expect(inc.tier).toBe('comps');
+		expect(inc.comp_type).toBe('lease');
+	});
+
+	it('COMP_SUBSECTIONS defines 5 subsection templates', () => {
+		expect(COMP_SUBSECTIONS).toHaveLength(5);
+		expect(COMP_SUBSECTIONS.map(s => s.key)).toEqual([
+			'comp_desc', 'comp_photo', 'comp_sale', 'comp_rationale', 'comp_map'
+		]);
+	});
+
+	it('getSectionsForApproaches includes comps tier sections', () => {
+		const sections = getSectionsForApproaches(['sales_comparison']);
+		const sca = sections.find(s => s.key === 'sales_comparison');
+		expect(sca).toBeDefined();
+		expect(sca!.tier).toBe('comps');
+	});
+});
+
 describe('SECTION_TYPE_MAP', () => {
 	it('maps transmittal to guided', () => {
 		expect(SECTION_TYPE_MAP['transmittal']).toBe('guided');
 	});
 
-	it('maps sales_comparison to prose', () => {
-		expect(SECTION_TYPE_MAP['sales_comparison']).toBe('prose');
+	it('maps sales_comparison to comps', () => {
+		expect(SECTION_TYPE_MAP['sales_comparison']).toBe('comps');
 	});
 
 	it('maps neighborhood to guided', () => {
