@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { ALL_SECTIONS, getSectionsForApproaches, SECTION_TYPE_MAP, SECTION_LABEL_MAP, DEFAULT_APPROACHES } from './sections.js';
 
 describe('ALL_SECTIONS', () => {
-	it('has 13 sections', () => {
-		expect(ALL_SECTIONS).toHaveLength(13);
+	it('has 38 sections', () => {
+		expect(ALL_SECTIONS).toHaveLength(38);
 	});
 
 	it('has unique keys', () => {
@@ -52,21 +52,31 @@ describe('getSectionsForApproaches', () => {
 
 	it('returns all sections for all three approaches', () => {
 		const sections = getSectionsForApproaches(['sales_comparison', 'income_cap', 'cost']);
-		expect(sections).toHaveLength(13);
+		// ALL_SECTIONS minus docxOnly sections (table_of_contents)
+		const nonDocxOnly = ALL_SECTIONS.filter(s => !s.docxOnly);
+		expect(sections).toHaveLength(nonDocxOnly.length);
 	});
 });
 
 describe('SECTION_TYPE_MAP', () => {
-	it('maps transmittal to boilerplate', () => {
-		expect(SECTION_TYPE_MAP['transmittal']).toBe('boilerplate');
+	it('maps transmittal to guided', () => {
+		expect(SECTION_TYPE_MAP['transmittal']).toBe('guided');
 	});
 
-	it('maps sales_comparison to comp', () => {
-		expect(SECTION_TYPE_MAP['sales_comparison']).toBe('comp');
+	it('maps sales_comparison to prose', () => {
+		expect(SECTION_TYPE_MAP['sales_comparison']).toBe('prose');
 	});
 
-	it('maps neighborhood to narrative', () => {
-		expect(SECTION_TYPE_MAP['neighborhood']).toBe('narrative');
+	it('maps neighborhood to guided', () => {
+		expect(SECTION_TYPE_MAP['neighborhood']).toBe('guided');
+	});
+
+	it('maps title_page to auto', () => {
+		expect(SECTION_TYPE_MAP['title_page']).toBe('auto');
+	});
+
+	it('maps photographs to images', () => {
+		expect(SECTION_TYPE_MAP['photographs']).toBe('images');
 	});
 });
 
