@@ -4,7 +4,10 @@ import {
 	findOrCreateProperty,
 	insertSale,
 	insertLease,
-	linkDocumentProperty
+	linkDocumentProperty,
+	createReport,
+	addReportComp,
+	getDb
 } from '$lib/db/index.js';
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
@@ -162,6 +165,12 @@ export function persistExtractionResults(
 	documentId: number,
 	result: ExtractionResult
 ) {
+	let subjectPropertyId: number | null = null;
+	const saleComps: Array<{ propertyId: number; saleId: number | null; rank: number }> = [];
+	const leaseComps: Array<{ propertyId: number; leaseId: number | null; rank: number }> = [];
+	let saleRank = 0;
+	let leaseRank = 0;
+
 	// Persist sale comps
 	for (const comp of result.sale_comps) {
 		if (!comp.property?.address) {
@@ -170,9 +179,15 @@ export function persistExtractionResults(
 		}
 		const propertyId = findOrCreateProperty(comp.property);
 		linkDocumentProperty(documentId, propertyId, comp.role, undefined, comp.confidence);
+
+		if (comp.role === 'subject') {
+			subjectPropertyId = propertyId;
+		}
+
+		let saleId: number | null = null;
 		const s = comp.sale;
 		if (s && (s.sale_price || s.sale_date)) {
-			insertSale({
+			const saleResult = insertSale({
 				property_id: propertyId,
 				sale_date: toStr(s.sale_date) ?? undefined,
 				sale_price: toNum(s.sale_price) ?? undefined,
@@ -185,6 +200,12 @@ export function persistExtractionResults(
 				source_document_id: documentId,
 				confidence: comp.confidence
 			});
+			saleId = Number(saleResult.lastInsertRowid);
+		}
+
+		if (comp.role === 'comp_sale') {
+			saleRank++;
+			saleComps.push({ propertyId, saleId, rank: saleRank });
 		}
 	}
 
@@ -196,9 +217,15 @@ export function persistExtractionResults(
 		}
 		const propertyId = findOrCreateProperty(comp.property);
 		linkDocumentProperty(documentId, propertyId, comp.role, undefined, comp.confidence);
+
+		if (comp.role === 'subject' && !subjectPropertyId) {
+			subjectPropertyId = propertyId;
+		}
+
+		let leaseId: number | null = null;
 		const l = comp.lease;
 		if (l && (l.rent_per_sf || l.tenant_name)) {
-			insertLease({
+			const leaseResult = insertLease({
 				property_id: propertyId,
 				tenant_name: toStr(l.tenant_name) ?? undefined,
 				lease_sf: toNum(l.lease_sf) ?? undefined,
@@ -211,6 +238,50 @@ export function persistExtractionResults(
 				source_document_id: documentId,
 				confidence: comp.confidence
 			});
+			leaseId = Number(leaseResult.lastInsertRowid);
 		}
+
+		if (comp.role === 'comp_lease') {
+			leaseRank++;
+			leaseComps.push({ propertyId, leaseId, rank: leaseRank });
+		}
+	}
+
+	// Create report record and link comps
+	if (subjectPropertyId) {
+		const approaches: string[] = [];
+		if (saleComps.length > 0) approaches.push('sales_comparison');
+		if (leaseComps.length > 0) approaches.push('income_cap');
+
+		const reportResult = createReport({
+			report_number: result.report_number,
+			subject_property_id: subjectPropertyId,
+			approach: JSON.stringify(approaches),
+			effective_date: result.report_date
+		});
+		const reportId = Number(reportResult.lastInsertRowid);
+
+		for (const sc of saleComps) {
+			addReportComp({
+				report_id: reportId,
+				comp_type: 'sale',
+				property_id: sc.propertyId,
+				sale_id: sc.saleId ?? undefined,
+				rank: sc.rank
+			});
+		}
+		for (const lc of leaseComps) {
+			addReportComp({
+				report_id: reportId,
+				comp_type: 'lease',
+				property_id: lc.propertyId,
+				lease_id: lc.leaseId ?? undefined,
+				rank: lc.rank
+			});
+		}
+
+		console.log(`Document ${documentId}: created report ${reportId} (${result.report_number}) with ${saleComps.length} sale comps, ${leaseComps.length} lease comps`);
+	} else {
+		console.warn(`Document ${documentId}: no subject property found, skipping report creation`);
 	}
 }

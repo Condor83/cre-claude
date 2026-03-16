@@ -54,12 +54,16 @@ export const load: PageServerLoad = async ({ params }) => {
 		}
 	}
 
+	// Get target_price_psf from report
+	const reportRow = db.prepare('SELECT target_price_psf FROM reports WHERE id = ?').get(reportId) as { target_price_psf: number | null } | undefined;
+
 	return {
 		report,
 		sections,
 		comps,
 		propertyContext,
 		sectionStatuses,
-		images
+		images,
+		target_price_psf: reportRow?.target_price_psf ?? null
 	};
 };

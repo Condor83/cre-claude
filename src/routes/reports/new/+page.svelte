@@ -45,6 +45,8 @@
 	let intended_use = $state('estimate market value');
 	let property_rights = $state('fee simple');
 	let approaches = $state(['sales_comparison', 'income_cap']);
+	let target_price_psf = $state('');
+	let selected_comp_ids = $state<number[]>([]);
 
 	// County scraper — fires on Step 1 submit, before advancing to Step 2
 	async function fireScraper(): Promise<void> {
@@ -230,7 +232,9 @@
 					client_name: client_name.trim() || undefined,
 					intended_use: intended_use.trim() || undefined,
 					property_rights: property_rights || undefined,
-					approaches
+					approaches,
+				target_price_psf: target_price_psf ? Number(target_price_psf) : undefined,
+				selected_comp_ids
 				})
 			});
 
@@ -312,6 +316,12 @@
 				bind:intended_use
 				bind:property_rights
 				bind:approaches
+				bind:target_price_psf
+				bind:selected_comp_ids
+				subject_property_type={property_type}
+				subject_building_sf={building_sf}
+				subject_county={county}
+				subject_apn={apn}
 			/>
 		{/if}
 	</div>

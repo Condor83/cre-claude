@@ -86,6 +86,28 @@
 - **Priority:** P2
 - **Depends on:** Vitest setup (done), Playwright install
 
+### Comp Distance Badge
+- **What:** Show "X.X mi from subject" on comp nav items and comp page headers, auto-calculated from lat/lng.
+- **Why:** Gives Brad at-a-glance geographic relevance context for each comparable.
+- **Effort:** S
+- **Priority:** P3
+- **Depends on:** Sales Comparison Approach redesign + geocoding (both exist)
+
+### Comp Summary Tooltip
+- **What:** Hover a comp in SectionNav to see popup with photo, $/SF, cap rate, SF, year built, distance.
+- **Why:** Context without clicking — Brad can scan comps quickly from the nav.
+- **Effort:** S
+- **Priority:** P3
+- **Depends on:** Sales Comparison Approach redesign + comp photos
+
+### Lien-Based Price Suggestion
+- **What:** Scrape Utah County Recorder detail pages using deed entry_numbers to find trust deed amounts. Apply 30% down heuristic to suggest sale price range on the comp sale form.
+- **Why:** Biggest manual research task for Brad. Even a rough estimate saves significant time.
+- **Effort:** M
+- **Priority:** P2
+- **Depends on:** Sales Comparison Approach redesign. Risk: recorder data may not be accessible.
+- **Spike needed:** Investigate Utah County Recorder page structure for trust deed amount extraction.
+
 ## Skipped
 
 ### Browser Agents for Missing Info

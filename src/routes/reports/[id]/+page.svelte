@@ -3,7 +3,8 @@
 	import SectionNav from '$lib/components/SectionNav.svelte';
 	import AutoSection from '$lib/components/AutoSection.svelte';
 	import GuidedSubsection from '$lib/components/GuidedSubsection.svelte';
-	import CompSearch from '$lib/components/CompSearch.svelte';
+	import CompHub from '$lib/components/CompHub.svelte';
+	import CompPage from '$lib/components/CompPage.svelte';
 	import PropertyFacts from '$lib/components/PropertyFacts.svelte';
 	import AdjustmentGrid from '$lib/components/AdjustmentGrid.svelte';
 	import SalientFactsTable from '$lib/components/SalientFactsTable.svelte';
@@ -48,10 +49,56 @@
 
 	let activeSection = $state('title_page');
 	let activeSubsection = $state<string | null>(null);
+	let activeCompId = $state<number | null>(null);
+	let activeCompSubsection = $state<string | null>(null);
 	let showCompSearch = $state(false);
 	let showPropertyFacts = $state(false);
 	let generating = $state(false);
 	let fetchingCompImages = $state(false);
+
+	// Reactive comp list — cast to concrete shape for SectionNav
+	interface CompData {
+		id: number;
+		property_id: number;
+		comp_type: string;
+		rank: number;
+		address: string;
+		city: string;
+		content_html: string | null;
+		form_data: string | null;
+		[key: string]: unknown;
+	}
+	let compsData = $state(data.comps as CompData[]);
+
+	async function refreshComps() {
+		window.location.reload();
+	}
+
+	const activeComp = $derived(
+		activeCompId ? compsData.find(c => c.id === activeCompId) ?? null : null
+	);
+
+	function handleSelectComp(sectionKey: string, compId: number, subsectionKey?: string) {
+		activeSection = sectionKey;
+		activeSubsection = null;
+		if (compId === 0) {
+			// Static subsection (intro, grid, conclusion)
+			activeCompId = null;
+			activeCompSubsection = subsectionKey ?? null;
+		} else {
+			activeCompId = compId;
+			activeCompSubsection = subsectionKey ?? 'comp_desc';
+		}
+	}
+
+	async function handleReorder(compType: string, orderedIds: number[]) {
+		await fetch(`/reports/${data.report.id}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ action: 'reorder_comps', comp_type: compType, ordered_ids: orderedIds })
+		});
+		refreshComps();
+	}
 
 	// ── Guided subsection state ──
 	const isGuidedSection = $derived(!!GUIDED_SUBSECTIONS[activeSection]?.length);
@@ -577,9 +624,14 @@
 			sections={flatSections}
 			{activeSection}
 			{activeSubsection}
+			{activeCompId}
+			{activeCompSubsection}
 			{sectionStatuses}
+			reportComps={compsData}
 			onselect={handleSelectSection}
 			onselectsubsection={handleSelectSubsection}
+			onselectcomp={handleSelectComp}
+			onreorder={handleReorder}
 		/>
 		{#if tasksStillRunning}
 			<a href="/reports/{data.report.id}/loading" class="loading-banner">
@@ -650,7 +702,62 @@
 			</div>
 		{/if}
 
-		{#if isGuidedSection && activeSubsectionDef}
+		{#if activeTier === 'comps' && activeCompSubsection === 'intro'}
+			<!-- SCA Intro (auto-generated) -->
+			<AutoSection
+				html={getInitialHtml(activeSection)}
+				sectionKey={activeSection}
+				reportId={data.report.id}
+				status={sectionStatuses[activeSection]}
+				onOverride={() => handleOverride(activeSection)}
+				onRegenerate={() => handleRegenerate(activeSection)}
+			/>
+		{:else if activeTier === 'comps' && activeCompSubsection === 'grid'}
+			<!-- Adjustment Grid -->
+			<AdjustmentGrid
+				comps={compsData.filter(c =>
+					activeSection === 'sales_comparison' ? c.comp_type === 'sale' : c.comp_type === 'lease'
+				) as any}
+				reportId={data.report.id}
+			/>
+		{:else if activeTier === 'comps' && activeCompSubsection === 'conclusion'}
+			<!-- SCA Conclusion (auto-generated) -->
+			<AutoSection
+				html={getInitialHtml(activeSection)}
+				sectionKey={activeSection}
+				reportId={data.report.id}
+				status={sectionStatuses[activeSection]}
+				onOverride={() => handleOverride(activeSection)}
+				onRegenerate={() => handleRegenerate(activeSection)}
+			/>
+		{:else if activeTier === 'comps' && activeComp}
+			<!-- Individual comp page -->
+			<CompPage
+				comp={activeComp}
+				reportId={data.report.id}
+				activeSubsection={activeCompSubsection}
+				images={activeSectionImages}
+				onSave={async (subKey, html, fd) => {
+					await fetch(`/reports/${data.report.id}`, {
+						method: 'PUT',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							action: 'save_comp_subsection',
+							comp_id: activeCompId,
+							subsection_key: subKey,
+							html,
+							form_data: fd,
+							comp_type: activeComp.comp_type
+						})
+					});
+				}}
+			/>
+		{:else if activeTier === 'comps'}
+			<!-- Comps section overview (no comp selected) -->
+			<div class="comps-overview">
+				<p>Select a comparable from the sidebar, or use the Comparables panel to add new ones.</p>
+			</div>
+		{:else if isGuidedSection && activeSubsectionDef}
 			<!-- ── Guided subsection mode ── -->
 			{#key `${activeSection}.${activeSubsection}`}
 				<GuidedSubsection
@@ -751,22 +858,17 @@
 			</div>
 		{/if}
 
-		{#if activeSection === 'sales_comparison' || activeSection === 'income_approach'}
-			<AdjustmentGrid
-				comps={data.comps.filter((c: { comp_type: string }) =>
-					activeSection === 'sales_comparison' ? c.comp_type === 'sale' : c.comp_type === 'lease'
-				)}
-				reportId={data.report.id}
-			/>
-		{/if}
 	</div>
 
 	{#if showCompSearch}
 		<div class="comp-panel">
-			<CompSearch
+			<CompHub
 				reportId={data.report.id}
-				existingComps={data.comps}
+				existingComps={compsData}
+				subjectPropertyId={data.propertyContext?.property_id}
+				subjectCounty={data.propertyContext?.county ?? undefined}
 				onClose={() => showCompSearch = false}
+				onCompChanged={refreshComps}
 			/>
 		</div>
 	{/if}
