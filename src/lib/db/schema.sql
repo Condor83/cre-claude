@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS reports (
   client_name TEXT,
   intended_use TEXT DEFAULT 'estimate market value',
   property_rights TEXT DEFAULT 'fee simple',
+  target_price_psf REAL,
   status TEXT DEFAULT 'draft' CHECK(status IN ('draft', 'review', 'final')),
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -159,6 +160,42 @@ CREATE TABLE IF NOT EXISTS report_comps (
   lease_id INTEGER REFERENCES leases(id),
   rank INTEGER,
   adjustment_json TEXT,
-  analysis_text TEXT
+  analysis_text TEXT,
+  content_html TEXT,
+  form_data TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_comps_report ON report_comps(report_id);
+
+-- Appraiser settings (key/value store for appraiser profile)
+CREATE TABLE IF NOT EXISTS appraiser_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+-- Market data store (population, employment, vacancy tables per market area)
+CREATE TABLE IF NOT EXISTS market_data (
+  id INTEGER PRIMARY KEY,
+  market_area TEXT NOT NULL,
+  data_type TEXT NOT NULL,
+  data_json TEXT NOT NULL,
+  year INTEGER,
+  source TEXT,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(market_area, data_type)
+);
+CREATE INDEX IF NOT EXISTS idx_market_data_area ON market_data(market_area);
+CREATE INDEX IF NOT EXISTS idx_market_data_type ON market_data(data_type);
+
+-- Section images (filesystem paths, not BLOBs)
+CREATE TABLE IF NOT EXISTS section_images (
+  id INTEGER PRIMARY KEY,
+  report_id INTEGER REFERENCES reports(id) ON DELETE CASCADE,
+  section_key TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  caption TEXT,
+  sort_order INTEGER DEFAULT 0,
+  source TEXT DEFAULT 'manual',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_section_images_report ON section_images(report_id);
+CREATE INDEX IF NOT EXISTS idx_section_images_key ON section_images(report_id, section_key);

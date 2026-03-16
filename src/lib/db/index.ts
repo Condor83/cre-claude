@@ -3,6 +3,7 @@ import * as sqliteVec from 'sqlite-vec';
 import { createHash } from 'crypto';
 import { readFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { COMP_SUBSECTIONS } from '$lib/config/sections.js';
 
 // Project root — works both in dev (process.cwd) and built mode
 const PROJECT_ROOT = process.env.CRE_DATA_DIR || process.cwd();
@@ -247,6 +248,97 @@ function migrateWizardSchema(db: Database.Database): void {
 	console.log('[wizard-migration] Complete');
 }
 
+// ── Schema migration: add status + form_data to report_sections ──
+
+function migrateReportSectionsColumns(db: Database.Database): void {
+	const cols = db.prepare("PRAGMA table_info(report_sections)").all() as Array<{ name: string }>;
+	const hasStatus = cols.some(c => c.name === 'status');
+	if (hasStatus) return;
+
+	console.log('[sections-migration] Adding status + form_data columns to report_sections...');
+	db.exec(`ALTER TABLE report_sections ADD COLUMN status TEXT DEFAULT 'empty'`);
+	db.exec(`ALTER TABLE report_sections ADD COLUMN form_data TEXT`);
+
+	// Backfill: any section with content is 'in_progress'
+	db.exec(`UPDATE report_sections SET status = 'in_progress' WHERE content_html IS NOT NULL AND content_html != ''`);
+	console.log('[sections-migration] Complete');
+}
+
+// ── Schema migration: add source column to section_images ──
+
+function migrateSectionImagesSource(db: Database.Database): void {
+	const cols = db.prepare("PRAGMA table_info(section_images)").all() as Array<{ name: string }>;
+	const hasSource = cols.some(c => c.name === 'source');
+	if (hasSource) return;
+
+	console.log('[images-migration] Adding source column to section_images...');
+	db.exec(`ALTER TABLE section_images ADD COLUMN source TEXT DEFAULT 'manual'`);
+	console.log('[images-migration] Complete');
+}
+
+// ── Schema migration: add UNIQUE constraint to market_data ──
+
+function migrateMarketDataUnique(db: Database.Database): void {
+	// Check if the UNIQUE index already exists
+	const indexes = db.prepare("PRAGMA index_list(market_data)").all() as Array<{ name: string; unique: number }>;
+	const hasUniqueIndex = indexes.some(i => i.unique === 1 && i.name.includes('market_area'));
+	if (hasUniqueIndex) return;
+
+	console.log('[market-data-migration] Adding UNIQUE(market_area, data_type) to market_data...');
+	db.pragma('foreign_keys = OFF');
+
+	const migrate = db.transaction(() => {
+		// Deduplicate: keep only the latest row for each (market_area, data_type) pair
+		db.exec(`
+			DELETE FROM market_data WHERE id NOT IN (
+				SELECT MAX(id) FROM market_data GROUP BY market_area, data_type
+			)
+		`);
+		// Recreate table with UNIQUE constraint
+		db.exec(`
+			CREATE TABLE market_data_new (
+				id INTEGER PRIMARY KEY,
+				market_area TEXT NOT NULL,
+				data_type TEXT NOT NULL,
+				data_json TEXT NOT NULL,
+				year INTEGER,
+				source TEXT,
+				updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(market_area, data_type)
+			)
+		`);
+		db.exec(`INSERT INTO market_data_new SELECT * FROM market_data`);
+		db.exec(`DROP TABLE market_data`);
+		db.exec(`ALTER TABLE market_data_new RENAME TO market_data`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_market_data_area ON market_data(market_area)`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_market_data_type ON market_data(data_type)`);
+	});
+
+	try {
+		migrate();
+		console.log('[market-data-migration] Complete');
+	} finally {
+		db.pragma('foreign_keys = ON');
+	}
+}
+
+// ── Schema migration: add content_html/form_data to report_comps + target_price_psf to reports ──
+
+function migrateCompContentColumns(db: Database.Database): void {
+	const cols = db.prepare("PRAGMA table_info(report_comps)").all() as Array<{name: string}>;
+	const colNames = cols.map(c => c.name);
+
+	if (!colNames.includes('content_html')) {
+		db.exec('ALTER TABLE report_comps ADD COLUMN content_html TEXT');
+		db.exec('ALTER TABLE report_comps ADD COLUMN form_data TEXT');
+	}
+
+	const rCols = db.prepare("PRAGMA table_info(reports)").all() as Array<{name: string}>;
+	if (!rCols.map(c => c.name).includes('target_price_psf')) {
+		db.exec('ALTER TABLE reports ADD COLUMN target_price_psf REAL');
+	}
+}
+
 export function getDb(): Database.Database {
 	if (_db) return _db;
 
@@ -280,6 +372,18 @@ export function getDb(): Database.Database {
 
 	// Migrate to wizard schema (new columns on properties + reports)
 	migrateWizardSchema(_db);
+
+	// Migrate report_sections (status + form_data columns)
+	migrateReportSectionsColumns(_db);
+
+	// Migrate section_images (source column)
+	migrateSectionImagesSource(_db);
+
+	// Migrate market_data (UNIQUE constraint)
+	migrateMarketDataUnique(_db);
+
+	// Migrate report_comps (content_html, form_data) + reports (target_price_psf)
+	migrateCompContentColumns(_db);
 
 	// Re-run schema to ensure all indexes exist (idempotent after migration)
 	_db.exec(schema);
@@ -727,11 +831,12 @@ export function createReport(report: {
 	client_name?: string;
 	intended_use?: string;
 	property_rights?: string;
+	target_price_psf?: number;
 }) {
 	const db = getDb();
 	const stmt = db.prepare(`
-		INSERT INTO reports (report_number, subject_property_id, approach, effective_date, client_name, intended_use, property_rights)
-		VALUES (@report_number, @subject_property_id, @approach, @effective_date, @client_name, @intended_use, @property_rights)
+		INSERT INTO reports (report_number, subject_property_id, approach, effective_date, client_name, intended_use, property_rights, target_price_psf)
+		VALUES (@report_number, @subject_property_id, @approach, @effective_date, @client_name, @intended_use, @property_rights, @target_price_psf)
 	`);
 	return stmt.run({
 		report_number: report.report_number ?? null,
@@ -740,7 +845,8 @@ export function createReport(report: {
 		effective_date: report.effective_date ?? null,
 		client_name: report.client_name ?? null,
 		intended_use: report.intended_use ?? 'estimate market value',
-		property_rights: report.property_rights ?? 'fee simple'
+		property_rights: report.property_rights ?? 'fee simple',
+		target_price_psf: report.target_price_psf ?? null
 	});
 }
 
@@ -774,17 +880,67 @@ export function listReports() {
 		.all();
 }
 
-export function saveSection(reportId: number, sectionKey: string, contentJson: string, contentHtml: string) {
+export function deleteReport(id: number): { imagePaths: string[] } {
+	const db = getDb();
+	// Collect image file paths before CASCADE deletes them
+	const images = db.prepare('SELECT file_path FROM section_images WHERE report_id = ?').all(id) as Array<{ file_path: string }>;
+	db.prepare('DELETE FROM reports WHERE id = ?').run(id);
+	return { imagePaths: images.map(i => i.file_path) };
+}
+
+export function saveSection(
+	reportId: number,
+	sectionKey: string,
+	contentJson: string,
+	contentHtml: string,
+	status?: string,
+	formData?: string
+) {
 	const db = getDb();
 	const stmt = db.prepare(`
-		INSERT INTO report_sections (report_id, section_key, content_json, content_html, last_saved)
-		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO report_sections (report_id, section_key, content_json, content_html, status, form_data, last_saved)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(report_id, section_key) DO UPDATE SET
 			content_json = excluded.content_json,
 			content_html = excluded.content_html,
+			status = COALESCE(excluded.status, report_sections.status),
+			form_data = COALESCE(excluded.form_data, report_sections.form_data),
 			last_saved = CURRENT_TIMESTAMP
 	`);
-	return stmt.run(reportId, sectionKey, contentJson, contentHtml);
+	return stmt.run(reportId, sectionKey, contentJson, contentHtml, status ?? null, formData ?? null);
+}
+
+export function saveSectionAutoContent(
+	reportId: number,
+	sectionKey: string,
+	contentHtml: string
+) {
+	const db = getDb();
+	// Guard: skip if section already has non-empty status (don't overwrite edits)
+	const existing = db.prepare(
+		`SELECT status FROM report_sections WHERE report_id = ? AND section_key = ?`
+	).get(reportId, sectionKey) as { status: string } | undefined;
+
+	if (existing && existing.status !== 'empty' && existing.status !== 'auto_generated') {
+		return; // Don't overwrite user edits
+	}
+
+	const stmt = db.prepare(`
+		INSERT INTO report_sections (report_id, section_key, content_json, content_html, status, last_saved)
+		VALUES (?, ?, NULL, ?, 'auto_generated', CURRENT_TIMESTAMP)
+		ON CONFLICT(report_id, section_key) DO UPDATE SET
+			content_html = excluded.content_html,
+			status = 'auto_generated',
+			last_saved = CURRENT_TIMESTAMP
+	`);
+	return stmt.run(reportId, sectionKey, contentHtml);
+}
+
+export function updateSectionStatus(reportId: number, sectionKey: string, status: string) {
+	const db = getDb();
+	db.prepare(
+		`UPDATE report_sections SET status = ?, last_saved = CURRENT_TIMESTAMP WHERE report_id = ? AND section_key = ?`
+	).run(status, reportId, sectionKey);
 }
 
 export function getSections(reportId: number) {
@@ -810,11 +966,13 @@ export function addReportComp(comp: {
 	rank?: number;
 	adjustment_json?: string;
 	analysis_text?: string;
+	content_html?: string;
+	form_data?: string;
 }) {
 	const db = getDb();
 	const stmt = db.prepare(`
-		INSERT INTO report_comps (report_id, comp_type, property_id, sale_id, lease_id, rank, adjustment_json, analysis_text)
-		VALUES (@report_id, @comp_type, @property_id, @sale_id, @lease_id, @rank, @adjustment_json, @analysis_text)
+		INSERT INTO report_comps (report_id, comp_type, property_id, sale_id, lease_id, rank, adjustment_json, analysis_text, content_html, form_data)
+		VALUES (@report_id, @comp_type, @property_id, @sale_id, @lease_id, @rank, @adjustment_json, @analysis_text, @content_html, @form_data)
 	`);
 	return stmt.run({
 		report_id: comp.report_id,
@@ -824,7 +982,9 @@ export function addReportComp(comp: {
 		lease_id: comp.lease_id ?? null,
 		rank: comp.rank ?? null,
 		adjustment_json: comp.adjustment_json ?? null,
-		analysis_text: comp.analysis_text ?? null
+		analysis_text: comp.analysis_text ?? null,
+		content_html: comp.content_html ?? null,
+		form_data: comp.form_data ?? null
 	});
 }
 
@@ -834,7 +994,11 @@ export function getReportComps(reportId: number) {
 		.prepare(
 			`
 		SELECT rc.*, p.address, p.city, p.building_sf, p.year_built, p.property_type,
+			p.latitude, p.longitude, p.apn, p.county, p.county_data_json,
+			p.land_sf, p.land_acres, p.zoning, p.construction_class, p.quality, p.condition,
+			p.stories, p.owner_name, p.market_value,
 			s.sale_date, s.sale_price, s.price_per_sf, s.cap_rate as sale_cap_rate,
+			s.grantor, s.grantee, s.financing, s.confidence as sale_confidence,
 			l.tenant_name, l.rent_per_sf, l.lease_type, l.mls_sourced as lease_mls_sourced,
 			s.mls_sourced as sale_mls_sourced
 		FROM report_comps rc
@@ -846,4 +1010,301 @@ export function getReportComps(reportId: number) {
 	`
 		)
 		.all(reportId);
+}
+
+export function removeReportComp(compId: number, reportId: number) {
+	const db = getDb();
+	const comp = db.prepare('SELECT rank, comp_type FROM report_comps WHERE id = ? AND report_id = ?').get(compId, reportId) as { rank: number; comp_type: string } | undefined;
+	if (!comp) return;
+
+	db.prepare('DELETE FROM report_comps WHERE id = ? AND report_id = ?').run(compId, reportId);
+
+	// Shift ranks down for remaining comps of same type
+	db.prepare(`
+		UPDATE report_comps SET rank = rank - 1
+		WHERE report_id = ? AND comp_type = ? AND rank > ?
+	`).run(reportId, comp.comp_type, comp.rank);
+}
+
+export function reorderReportComps(reportId: number, compType: string, orderedIds: number[]) {
+	const db = getDb();
+	const stmt = db.prepare('UPDATE report_comps SET rank = ? WHERE id = ? AND report_id = ?');
+	const transaction = db.transaction((ids: number[]) => {
+		ids.forEach((id, index) => {
+			stmt.run(index + 1, id, reportId);
+		});
+	});
+	transaction(orderedIds);
+}
+
+export function saveCompSubsection(compId: number, subsectionKey: string, html: string, formData?: Record<string, unknown>) {
+	const db = getDb();
+	const comp = db.prepare('SELECT form_data, content_html FROM report_comps WHERE id = ?').get(compId) as { form_data: string | null; content_html: string | null } | undefined;
+	if (!comp) return;
+
+	let fd: Record<string, unknown> = {};
+	if (comp.form_data) {
+		try { fd = JSON.parse(comp.form_data); } catch { /* ignore */ }
+	}
+
+	// Update subsection HTMLs
+	if (!fd._subsection_htmls) fd._subsection_htmls = {};
+	(fd._subsection_htmls as Record<string, string>)[subsectionKey] = html;
+
+	// Update subsection form data if provided
+	if (formData) {
+		if (!fd._subsection_form_data) fd._subsection_form_data = {};
+		(fd._subsection_form_data as Record<string, unknown>)[subsectionKey] = formData;
+	}
+
+	// Rebuild content_html from all subsections in order
+	const COMP_SUB_ORDER = COMP_SUBSECTIONS.map(s => s.key);
+	const subsectionHtmls = fd._subsection_htmls as Record<string, string>;
+	const contentHtml = COMP_SUB_ORDER
+		.map((key: string) => subsectionHtmls[key] ?? '')
+		.filter((h: string) => h.trim().length > 0)
+		.join('\n\n');
+
+	db.prepare('UPDATE report_comps SET form_data = ?, content_html = ? WHERE id = ?')
+		.run(JSON.stringify(fd), contentHtml, compId);
+
+	return contentHtml;
+}
+
+// ── Shared property context (used by templates + copilot) ──
+
+export interface PropertyContext {
+	// Report fields
+	report_id: number;
+	report_number: string | null;
+	approach: string;
+	effective_date: string | null;
+	client_name: string | null;
+	intended_use: string | null;
+	property_rights: string | null;
+	report_date: string;
+	report_status: string;
+	// Property fields
+	property_id: number;
+	address: string;
+	city: string | null;
+	state: string;
+	zip: string | null;
+	apn: string | null;
+	county: string | null;
+	property_type: string | null;
+	year_built: number | null;
+	building_sf: number | null;
+	land_sf: number | null;
+	land_acres: number | null;
+	stories: number | null;
+	construction_class: string | null;
+	quality: string | null;
+	condition: string | null;
+	zoning: string | null;
+	market_value: number | null;
+	county_data_json: string | null;
+	owner_name: string | null;
+	acquisition_date: string | null;
+	occupancy: string | null;
+	latitude: number | null;
+	longitude: number | null;
+	// Derived calcs
+	building_to_land_ratio: number | null;
+	effective_age: number | null;
+	land_sf_from_acres: number | null;
+}
+
+export function getPropertyContext(reportId: number): PropertyContext | null {
+	const db = getDb();
+	const row = db.prepare(`
+		SELECT
+			r.id as report_id, r.report_number, r.approach, r.effective_date,
+			r.client_name, r.intended_use, r.property_rights, r.status as report_status,
+			r.created_at as report_date,
+			p.id as property_id, p.address, p.city, p.state, p.zip, p.apn,
+			p.county, p.property_type, p.year_built, p.building_sf, p.land_sf,
+			p.land_acres, p.stories, p.construction_class, p.quality, p.condition,
+			p.zoning, p.market_value, p.county_data_json, p.owner_name,
+			p.acquisition_date, p.occupancy, p.latitude, p.longitude
+		FROM reports r
+		JOIN properties p ON p.id = r.subject_property_id
+		WHERE r.id = ?
+	`).get(reportId) as Record<string, unknown> | undefined;
+
+	if (!row) return null;
+
+	const buildingSf = row.building_sf as number | null;
+	const landSf = row.land_sf as number | null;
+	const landAcres = row.land_acres as number | null;
+	const yearBuilt = row.year_built as number | null;
+	const effectiveDate = row.effective_date as string | null;
+
+	// Derived calculations
+	const landSfFromAcres = landAcres && !landSf ? landAcres * 43560 : null;
+	const effectiveLandSf = landSf ?? landSfFromAcres;
+	const buildingToLandRatio = buildingSf && effectiveLandSf
+		? Math.round((buildingSf / effectiveLandSf) * 100) / 100
+		: null;
+	const currentYear = effectiveDate ? new Date(effectiveDate).getFullYear() : new Date().getFullYear();
+	const effectiveAge = yearBuilt ? currentYear - yearBuilt : null;
+
+	return {
+		...(row as unknown as PropertyContext),
+		building_to_land_ratio: buildingToLandRatio,
+		effective_age: effectiveAge,
+		land_sf_from_acres: landSfFromAcres
+	};
+}
+
+// ── Appraiser settings helpers ──
+
+export function getAppraiserSetting(key: string): string | null {
+	const db = getDb();
+	const row = db.prepare('SELECT value FROM appraiser_settings WHERE key = ?').get(key) as { value: string } | undefined;
+	return row?.value ?? null;
+}
+
+export function getAllAppraiserSettings(): Record<string, string> {
+	const db = getDb();
+	const rows = db.prepare('SELECT key, value FROM appraiser_settings').all() as Array<{ key: string; value: string }>;
+	return Object.fromEntries(rows.map(r => [r.key, r.value]));
+}
+
+export function setAppraiserSetting(key: string, value: string): void {
+	const db = getDb();
+	db.prepare(
+		`INSERT INTO appraiser_settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+	).run(key, value);
+}
+
+export function setAppraiserSettings(settings: Record<string, string>): void {
+	const db = getDb();
+	const stmt = db.prepare(
+		`INSERT INTO appraiser_settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+	);
+	const batch = db.transaction(() => {
+		for (const [key, value] of Object.entries(settings)) {
+			stmt.run(key, value);
+		}
+	});
+	batch();
+}
+
+// ── Market data helpers ──
+
+export function getMarketData(marketArea: string, dataType?: string) {
+	const db = getDb();
+	if (dataType) {
+		return db.prepare(
+			'SELECT * FROM market_data WHERE market_area = ? AND data_type = ? ORDER BY year DESC'
+		).all(marketArea, dataType);
+	}
+	return db.prepare(
+		'SELECT * FROM market_data WHERE market_area = ? ORDER BY data_type, year DESC'
+	).all(marketArea);
+}
+
+export function upsertMarketData(data: {
+	market_area: string;
+	data_type: string;
+	data_json: string;
+	year?: number;
+	source?: string;
+}) {
+	const db = getDb();
+	return db.prepare(`
+		INSERT INTO market_data (market_area, data_type, data_json, year, source, updated_at)
+		VALUES (@market_area, @data_type, @data_json, @year, @source, CURRENT_TIMESTAMP)
+		ON CONFLICT(market_area, data_type) DO UPDATE SET
+			data_json = excluded.data_json,
+			year = excluded.year,
+			source = excluded.source,
+			updated_at = CURRENT_TIMESTAMP
+	`).run({
+		market_area: data.market_area,
+		data_type: data.data_type,
+		data_json: data.data_json,
+		year: data.year ?? null,
+		source: data.source ?? null
+	});
+}
+
+export function getMarketDataFreshness(marketArea: string, dataType: string): { fresh: boolean; ageInDays: number; data: unknown | null } {
+	const db = getDb();
+	const row = db.prepare(
+		'SELECT data_json, updated_at FROM market_data WHERE market_area = ? AND data_type = ? ORDER BY updated_at DESC LIMIT 1'
+	).get(marketArea, dataType) as { data_json: string; updated_at: string } | undefined;
+
+	if (!row) return { fresh: false, ageInDays: Infinity, data: null };
+
+	const updatedAt = new Date(row.updated_at);
+	const ageInDays = (Date.now() - updatedAt.getTime()) / (1000 * 60 * 60 * 24);
+	let data: unknown = null;
+	try { data = JSON.parse(row.data_json); } catch { /* ignore */ }
+
+	return { fresh: ageInDays < 30, ageInDays, data };
+}
+
+// ── Section image helpers ──
+
+export interface SectionImage {
+	id: number;
+	report_id: number;
+	section_key: string;
+	file_path: string;
+	caption: string | null;
+	sort_order: number;
+	source: string;
+	created_at: string;
+}
+
+export function getSectionImages(reportId: number, sectionKey: string): SectionImage[] {
+	const db = getDb();
+	return db.prepare(
+		'SELECT * FROM section_images WHERE report_id = ? AND section_key = ? ORDER BY sort_order, id'
+	).all(reportId, sectionKey) as SectionImage[];
+}
+
+export function getAllReportImages(reportId: number): SectionImage[] {
+	const db = getDb();
+	return db.prepare(
+		'SELECT * FROM section_images WHERE report_id = ? ORDER BY section_key, sort_order, id'
+	).all(reportId) as SectionImage[];
+}
+
+export function addSectionImage(
+	reportId: number,
+	sectionKey: string,
+	filePath: string,
+	caption: string | null,
+	sortOrder: number,
+	source: 'manual' | 'auto' = 'manual'
+): number {
+	const db = getDb();
+	const result = db.prepare(
+		`INSERT INTO section_images (report_id, section_key, file_path, caption, sort_order, source)
+		 VALUES (?, ?, ?, ?, ?, ?)`
+	).run(reportId, sectionKey, filePath, caption, sortOrder, source);
+	return Number(result.lastInsertRowid);
+}
+
+export function updateImageCaption(imageId: number, caption: string): void {
+	const db = getDb();
+	db.prepare('UPDATE section_images SET caption = ? WHERE id = ?').run(caption, imageId);
+}
+
+export function updateImageOrder(imageId: number, sortOrder: number): void {
+	const db = getDb();
+	db.prepare('UPDATE section_images SET sort_order = ? WHERE id = ?').run(sortOrder, imageId);
+}
+
+export function deleteImage(imageId: number): string | null {
+	const db = getDb();
+	const row = db.prepare('SELECT file_path FROM section_images WHERE id = ?').get(imageId) as { file_path: string } | undefined;
+	if (!row) return null;
+	db.prepare('DELETE FROM section_images WHERE id = ?').run(imageId);
+	return row.file_path;
 }

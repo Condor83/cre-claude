@@ -3,6 +3,8 @@ import type { AnyNode } from 'domhandler';
 
 export interface PropertyFacts {
 	apn: string;
+	address: string;
+	city: string;
 	year_built: number;
 	building_sf: number;    // above grade + mezzanine
 	land_acres: number;
@@ -502,6 +504,39 @@ export function extractTaxHistory($: cheerio.CheerioAPI, panel: cheerio.Cheerio<
 }
 
 /**
+ * Extract value history from the Value History tab in property.asp.
+ *
+ * Actual column layout (13 columns):
+ * Year(0) | RE Com(1) | RE Res(2) | RE Agr(3) | RE Tot(4) |
+ * Imp Com(5) | Imp Res(6) | Imp Agr(7) | Imp Tot(8) |
+ * GB Land(9) | GB Homesite(10) | GB Tot(11) | Market Value(12)
+ *
+ * We extract: land = RE Tot (col 4), improvement = Imp Tot (col 8), total = Market Value (col 12).
+ */
+export function extractValueHistoryFromProperty($: cheerio.CheerioAPI, panel: cheerio.Cheerio<AnyNode>): CountyDataJson['value_history'] {
+	const history: CountyDataJson['value_history'] = [];
+
+	panel.find('tr').each(function () {
+		const tds = $(this).children('td');
+		if (tds.length < 13) return;
+
+		// Year is in column 0, may be a link like <a href="PropertyValues.asp?...">2025</a>
+		const yearText = tds.eq(0).text().trim();
+		const yearMatch = yearText.match(/^(\d{4})$/);
+		if (!yearMatch) return;
+
+		const year = parseInt(yearMatch[1], 10);
+		const land = parseFloat(tds.eq(4).text().replace(/[$,\s]/g, '')) || 0;
+		const improvement = parseFloat(tds.eq(8).text().replace(/[$,\s]/g, '')) || 0;
+		const total = parseFloat(tds.eq(12).text().replace(/[$,\s]/g, '')) || 0;
+
+		history.push({ year, land, improvement, total });
+	});
+
+	return history;
+}
+
+/**
  * Extract warranty deed transactions from the Documents tab in property.asp.
  *
  * Actual column layout:
@@ -514,9 +549,9 @@ export function extractDeeds($: cheerio.CheerioAPI, panel: cheerio.Cheerio<AnyNo
 		const tds = $(this).children('td');
 		if (tds.length < 6) return;
 
-		// Type is column 3 — check for "WD" (Warranty Deed)
+		// Type is column 3 — check for "WD" (Warranty Deed) or "SP WD" (Special Warranty Deed)
 		const typeText = tds.eq(3).text().trim().toUpperCase();
-		if (typeText !== 'WD') return;
+		if (typeText !== 'WD' && typeText !== 'SP WD') return;
 
 		const entryNumber = tds.eq(0).text().trim();
 		const date = tds.eq(1).text().trim();
@@ -597,6 +632,23 @@ export async function scrapeUtahCountyPages(
 
 			// Extract ALL label/value pairs for county_data_json
 			countyData.appraisal_fields = extractAppraisalFields($);
+
+			// Address — format is "1433 W 130 SOUTH - OREM" (street - city)
+			try {
+				const addrVal = extractFieldValue($, 'Address:');
+				if (addrVal) {
+					const dashIdx = addrVal.lastIndexOf(' - ');
+					if (dashIdx > 0) {
+						data.address = addrVal.substring(0, dashIdx).trim();
+						data.city = addrVal.substring(dashIdx + 3).trim();
+						// Title-case the city (OREM → Orem)
+						data.city = data.city.charAt(0).toUpperCase() + data.city.slice(1).toLowerCase();
+					} else {
+						data.address = addrVal;
+					}
+					fieldsFound++;
+				}
+			} catch { /* optional */ }
 
 			// Year Built
 			try {
@@ -771,14 +823,24 @@ export async function scrapeUtahCountyPages(
 					}
 				}
 
-				// Tax History tab (index 1)
-				const taxPanel = validateTabPanel($prop, 1, 'Tax');
+				// Value History tab (index 1) — land/improvement/total breakdown
+				const valuePanel = validateTabPanel($prop, 1, 'Value');
+				if (valuePanel) {
+					const propValueHistory = extractValueHistoryFromProperty($prop, valuePanel);
+					if (propValueHistory.length > 0) {
+						// Property page has the full breakdown; prefer over ValNotice
+						countyData.value_history = propValueHistory;
+					}
+				}
+
+				// Tax History tab (index 2)
+				const taxPanel = validateTabPanel($prop, 2, 'Tax');
 				if (taxPanel) {
 					countyData.tax_history = extractTaxHistory($prop, taxPanel);
 				}
 
-				// Documents tab (index 2)
-				const docsPanel = validateTabPanel($prop, 2, 'Document');
+				// Documents tab (index 5)
+				const docsPanel = validateTabPanel($prop, 5, 'Document');
 				if (docsPanel) {
 					countyData.deeds = extractDeeds($prop, docsPanel);
 				}

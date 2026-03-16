@@ -1,6 +1,6 @@
-import { getDb, getSections, getReportComps, searchSimilarChunks } from '$lib/db/index.js';
+import { getDb, getPropertyContext, getSections, getReportComps, searchSimilarChunks } from '$lib/db/index.js';
 import { embedForQuery } from '$lib/embed/gemini.js';
-import { SECTION_TYPE_MAP } from '$lib/config/sections.js';
+import { SECTION_MAP } from '$lib/config/sections.js';
 
 export interface CopilotContext {
 	subject: Record<string, unknown>;
@@ -30,24 +30,27 @@ const CHUNK_SECTION_TYPES: Record<string, 'boilerplate' | 'comp' | 'narrative'> 
 	subject_lease_table: 'comp'
 };
 
+/** Map section tier to copilot section type */
+function tierToSectionType(sectionKey: string): 'boilerplate' | 'comp' | 'narrative' {
+	const def = SECTION_MAP[sectionKey];
+	if (def) {
+		if (def.tier === 'auto') return 'boilerplate';
+		if (def.group === 'valuation' && (def.key === 'sales_comparison' || def.key === 'income_approach')) return 'comp';
+		return 'narrative';
+	}
+	return CHUNK_SECTION_TYPES[sectionKey] ?? 'narrative';
+}
+
 export async function assembleContext(
 	reportId: number,
 	sectionKey: string
 ): Promise<CopilotContext> {
 	const db = getDb();
-	const sectionType = (SECTION_TYPE_MAP[sectionKey] ?? CHUNK_SECTION_TYPES[sectionKey] ?? 'narrative') as 'boilerplate' | 'comp' | 'narrative';
+	const sectionType = tierToSectionType(sectionKey);
 
-	// Get subject property
-	const report = db
-		.prepare(
-			`
-		SELECT r.*, p.*
-		FROM reports r
-		JOIN properties p ON p.id = r.subject_property_id
-		WHERE r.id = ?
-	`
-		)
-		.get(reportId) as Record<string, unknown>;
+	// Use shared property context (DRY — same query as templates)
+	const propCtx = getPropertyContext(reportId);
+	const subject = (propCtx ?? {}) as unknown as Record<string, unknown>;
 
 	// Get existing sections for context
 	const sections = getSections(reportId) as Array<{
@@ -111,7 +114,7 @@ export async function assembleContext(
 	}
 
 	return {
-		subject: report,
+		subject,
 		comps,
 		exemplars,
 		clauses,

@@ -45,6 +45,8 @@
 	let intended_use = $state('estimate market value');
 	let property_rights = $state('fee simple');
 	let approaches = $state(['sales_comparison', 'income_cap']);
+	let target_price_psf = $state('');
+	let selected_comp_ids = $state<number[]>([]);
 
 	// County scraper — fires on Step 1 submit, before advancing to Step 2
 	async function fireScraper(): Promise<void> {
@@ -71,6 +73,14 @@
 				if (result.found && result.data) {
 					const fields = result.data;
 					const filled = new SvelteSet<string>();
+					if (fields.address && !address) {
+						address = fields.address;
+						filled.add('address');
+					}
+					if (fields.city && !city) {
+						city = fields.city;
+						filled.add('city');
+					}
 					if (fields.apn && !apn) {
 						apn = fields.apn;
 						filled.add('apn');
@@ -222,13 +232,15 @@
 					client_name: client_name.trim() || undefined,
 					intended_use: intended_use.trim() || undefined,
 					property_rights: property_rights || undefined,
-					approaches
+					approaches,
+				target_price_psf: target_price_psf ? Number(target_price_psf) : undefined,
+				selected_comp_ids
 				})
 			});
 
 			if (res.ok) {
 				const data = await res.json();
-				goto(`/reports/${data.id}`);
+				goto(`/reports/${data.id}/loading`);
 			} else {
 				const err = await res.json().catch(() => null);
 				createError = err?.error || 'Failed to create report';
@@ -304,6 +316,12 @@
 				bind:intended_use
 				bind:property_rights
 				bind:approaches
+				bind:target_price_psf
+				bind:selected_comp_ids
+				subject_property_type={property_type}
+				subject_building_sf={building_sf}
+				subject_county={county}
+				subject_apn={apn}
 			/>
 		{/if}
 	</div>
