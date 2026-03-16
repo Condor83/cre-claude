@@ -6,13 +6,39 @@
 		status?: string;
 		onOverride: () => void;
 		onRegenerate: () => void;
+		dataSource?: string;
+		dataAge?: number | null;
+		onRefreshData?: () => void;
 	}
 
-	let { html, sectionKey, reportId, status = 'auto_generated', onOverride, onRegenerate }: Props = $props();
+	let { html, sectionKey, reportId, status = 'auto_generated', onOverride, onRegenerate, dataSource, dataAge, onRefreshData }: Props = $props();
 
 	const isReviewed = $derived(status === 'reviewed');
 
 	let regenerating = $state(false);
+	let refreshing = $state(false);
+
+	const freshnessColor = $derived(
+		dataAge == null ? 'red' :
+		dataAge < 30 ? 'green' :
+		dataAge < 180 ? 'amber' : 'red'
+	);
+
+	const freshnessLabel = $derived(
+		dataAge == null ? 'No data' :
+		dataAge < 1 ? 'Data: today' :
+		`Data: ${Math.round(dataAge)}d old`
+	);
+
+	async function handleRefresh() {
+		if (!onRefreshData) return;
+		refreshing = true;
+		try {
+			onRefreshData();
+		} finally {
+			setTimeout(() => { refreshing = false; }, 2000);
+		}
+	}
 
 	async function handleRegenerate() {
 		regenerating = true;
@@ -32,7 +58,18 @@
 		{:else}
 			<span class="auto-badge">Auto</span>
 		{/if}
+		{#if dataSource}
+			<div class="freshness-indicator">
+				<span class="freshness-dot" class:green={freshnessColor === 'green'} class:amber={freshnessColor === 'amber'} class:red={freshnessColor === 'red'}></span>
+				<span class="freshness-label">{freshnessLabel}</span>
+			</div>
+		{/if}
 		<div class="header-actions">
+			{#if dataSource && onRefreshData}
+				<button class="action-btn refresh-btn" onclick={handleRefresh} disabled={refreshing}>
+					{refreshing ? 'Refreshing...' : 'Refresh Data'}
+				</button>
+			{/if}
 			<button class="action-btn" onclick={handleRegenerate} disabled={regenerating}>
 				{regenerating ? 'Regenerating...' : 'Regenerate'}
 			</button>
@@ -166,5 +203,37 @@
 	:global(.auto-content th) {
 		background: #f9f9f9;
 		font-weight: 600;
+	}
+
+	.freshness-indicator {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		margin-left: auto;
+		margin-right: 0.5rem;
+	}
+
+	.freshness-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+	}
+
+	.freshness-dot.green { background: #4caf50; }
+	.freshness-dot.amber { background: #ff9800; }
+	.freshness-dot.red { background: #f44336; }
+
+	.freshness-label {
+		font-size: 0.7rem;
+		color: #888;
+	}
+
+	.refresh-btn {
+		color: #1565c0 !important;
+		border-color: #90caf9 !important;
+	}
+
+	.refresh-btn:hover:not(:disabled) {
+		background: #e3f2fd !important;
 	}
 </style>

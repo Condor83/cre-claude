@@ -1,10 +1,12 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createReport, findOrCreateProperty, listReports, saveSectionAutoContent } from '$lib/db/index.js';
+import { createReport, findOrCreateProperty, listReports, saveSectionAutoContent, saveSection } from '$lib/db/index.js';
 import { buildTemplateContext } from '$lib/templates/context.js';
 import { AUTO_TEMPLATES } from '$lib/templates/sections/index.js';
-import { getSectionsForApproaches, type SectionDef } from '$lib/config/sections.js';
+import { getSectionsForApproaches, GUIDED_SUBSECTIONS, type SectionDef } from '$lib/config/sections.js';
+import { renderSubsection } from '$lib/templates/subsections/index.js';
 import { autoSourceSubjectImages } from '$lib/services/auto-source-images.js';
+import { refreshAllDwsData } from '$lib/services/market-data.js';
 
 const VALID_APPROACHES = ['sales_comparison', 'income_cap', 'cost'];
 
@@ -130,6 +132,41 @@ export const POST: RequestHandler = async ({ request }) => {
 		autoSourceSubjectImages(reportId).catch(err =>
 			console.error('[auto-source] Subject images failed (non-fatal):', err)
 		);
+
+		// Fire-and-forget: refresh DWS data → render subsection tables on completion
+		refreshAllDwsData(property.county || 'utah_county')
+			.then(() => {
+				try {
+					const freshCtx = buildTemplateContext(reportId);
+					if (!freshCtx) return;
+					// Render auto subsections for all guided sections
+					const active = getSectionsForApproaches(approaches) as SectionDef[];
+					for (const section of active) {
+						const subs = GUIDED_SUBSECTIONS[section.key];
+						if (section.tier !== 'guided' || !subs?.length) continue;
+						const subHtmls: Record<string, string> = {};
+						for (const sub of subs) {
+							if (sub.tier === 'auto') {
+								const html = renderSubsection(sub.key, freshCtx);
+								if (html) subHtmls[sub.key] = html;
+							}
+						}
+						if (Object.keys(subHtmls).length > 0) {
+							const parentHtml = subs
+								.map(s => subHtmls[s.key] ?? '')
+								.filter(h => h.trim().length > 0)
+								.join('\n\n');
+							const formData = JSON.stringify({ _subsection_htmls: subHtmls, _subsection_form_data: {} });
+							saveSectionAutoContent(reportId, section.key, parentHtml);
+							saveSection(reportId, section.key, '', parentHtml, 'auto_generated', formData);
+						}
+					}
+					console.log('[market-data] Auto subsections rendered after DWS refresh');
+				} catch (err) {
+					console.error('[market-data] Subsection render after DWS failed (non-fatal):', err);
+				}
+			})
+			.catch(err => console.error('[market-data] DWS refresh failed (non-fatal):', err));
 
 		return json({ id: reportId });
 	} catch (err) {

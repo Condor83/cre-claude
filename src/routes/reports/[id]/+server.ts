@@ -5,7 +5,8 @@ import { assembleContext } from '$lib/copilot/context.js';
 import { generateSectionText } from '$lib/copilot/writer.js';
 import { buildTemplateContext } from '$lib/templates/context.js';
 import { AUTO_TEMPLATES } from '$lib/templates/sections/index.js';
-import { getSectionsForApproaches, type SectionDef } from '$lib/config/sections.js';
+import { renderSubsection } from '$lib/templates/subsections/index.js';
+import { getSectionsForApproaches, GUIDED_SUBSECTIONS, type SectionDef } from '$lib/config/sections.js';
 
 // Save section content (autosave endpoint)
 export const PUT: RequestHandler = async ({ params, request }) => {
@@ -13,8 +14,8 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 	const reportId = Number(params.id);
 
 	if (body.action === 'save_section') {
-		const { section_key, content_json, content_html, status } = body;
-		saveSection(reportId, section_key, content_json, content_html, status);
+		const { section_key, content_json, content_html, status, form_data } = body;
+		saveSection(reportId, section_key, content_json, content_html, status, form_data);
 		return json({ ok: true });
 	}
 
@@ -68,6 +69,29 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 		return json({ ok: true, html });
 	}
 
+	if (body.action === 'regenerate_subsection') {
+		const { section_key, subsection_key } = body;
+		const ctx = buildTemplateContext(reportId);
+		if (!ctx) return json({ error: 'Report context not found' }, { status: 404 });
+
+		// Get form_data options for this subsection
+		const db = getDb();
+		const existing = db.prepare('SELECT form_data FROM report_sections WHERE report_id = ? AND section_key = ?').get(reportId, section_key) as { form_data: string | null } | undefined;
+		let subOptions: Record<string, unknown> | undefined;
+		if (existing?.form_data) {
+			try {
+				const fd = JSON.parse(existing.form_data);
+				subOptions = fd._subsection_form_data?.[subsection_key];
+			} catch { /* ignore */ }
+		}
+
+		const html = renderSubsection(subsection_key, ctx, subOptions);
+		if (html == null) {
+			return json({ error: `No auto template for subsection ${subsection_key}` }, { status: 400 });
+		}
+		return json({ ok: true, html });
+	}
+
 	if (body.action === 'regenerate_all_auto') {
 		const ctx = buildTemplateContext(reportId);
 		if (!ctx) return json({ error: 'Report context not found' }, { status: 404 });
@@ -75,6 +99,7 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 		const approaches = (() => { try { return JSON.parse(ctx.approach); } catch { return ['sales_comparison', 'income_cap']; } })();
 		const activeSections = getSectionsForApproaches(approaches) as SectionDef[];
 		const updated: Record<string, string> = {};
+
 		for (const section of activeSections) {
 			if (section.tier === 'auto' && AUTO_TEMPLATES[section.key]) {
 				// Preserve saved form_data options (e.g. year range on assessment_taxes)
@@ -86,6 +111,49 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 				const html = AUTO_TEMPLATES[section.key](ctx, options);
 				saveSection(reportId, section.key, '', html, 'auto_generated');
 				updated[section.key] = html;
+			}
+
+			// Also regenerate auto subsections for guided sections
+			const subsections = GUIDED_SUBSECTIONS[section.key];
+			if (section.tier === 'guided' && subsections?.length) {
+				const existing = db.prepare('SELECT form_data FROM report_sections WHERE report_id = ? AND section_key = ?').get(reportId, section.key) as { form_data: string | null } | undefined;
+				let existingFormData: Record<string, unknown> = {};
+				if (existing?.form_data) {
+					try { existingFormData = JSON.parse(existing.form_data); } catch { /* ignore */ }
+				}
+
+				const subHtmls: Record<string, string> = (existingFormData._subsection_htmls as Record<string, string>) ?? {};
+				const subFormData: Record<string, Record<string, unknown>> = (existingFormData._subsection_form_data as Record<string, Record<string, unknown>>) ?? {};
+
+				let changed = false;
+				for (const sub of subsections) {
+					if (sub.tier === 'auto') {
+						const subOptions = subFormData[sub.key];
+						const html = renderSubsection(sub.key, ctx, subOptions);
+						if (html != null) {
+							subHtmls[sub.key] = html;
+							changed = true;
+						} else {
+							console.warn(`[regenerate] No template for subsection ${sub.key} in ${section.key}`);
+						}
+					}
+				}
+
+				if (changed) {
+					// Rebuild parent content_html
+					const parentHtml = subsections
+						.map(s => subHtmls[s.key] ?? '')
+						.filter(h => h.trim().length > 0)
+						.join('\n\n');
+
+					const formDataStr = JSON.stringify({
+						_subsection_htmls: subHtmls,
+						_subsection_form_data: subFormData
+					});
+
+					saveSection(reportId, section.key, '', parentHtml, 'auto_generated', formDataStr);
+					updated[section.key] = parentHtml;
+				}
 			}
 		}
 		return json({ ok: true, count: Object.keys(updated).length, updated });

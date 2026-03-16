@@ -2,6 +2,7 @@
 	import Editor from '$lib/components/Editor.svelte';
 	import SectionNav from '$lib/components/SectionNav.svelte';
 	import AutoSection from '$lib/components/AutoSection.svelte';
+	import GuidedSubsection from '$lib/components/GuidedSubsection.svelte';
 	import CompSearch from '$lib/components/CompSearch.svelte';
 	import PropertyFacts from '$lib/components/PropertyFacts.svelte';
 	import AdjustmentGrid from '$lib/components/AdjustmentGrid.svelte';
@@ -12,7 +13,9 @@
 		getSectionsForApproaches,
 		getSectionsByGroup,
 		SECTION_MAP,
-		type SectionDef
+		GUIDED_SUBSECTIONS,
+		type SectionDef,
+		type SubsectionDef
 	} from '$lib/config/sections.js';
 
 	let { data } = $props();
@@ -33,16 +36,159 @@
 		})))
 	);
 
-	// Images for active section
+	// Images for active section (include subsection images)
 	const activeSectionImages = $derived(
-		(data.images as SectionImage[])?.filter((img: SectionImage) => img.section_key === activeSection) ?? []
+		(data.images as SectionImage[])?.filter((img: SectionImage) => {
+			if (activeSubsection) {
+				return img.section_key === `${activeSection}.${activeSubsection}`;
+			}
+			return img.section_key === activeSection;
+		}) ?? []
 	);
 
 	let activeSection = $state('title_page');
+	let activeSubsection = $state<string | null>(null);
 	let showCompSearch = $state(false);
 	let showPropertyFacts = $state(false);
 	let generating = $state(false);
 	let fetchingCompImages = $state(false);
+
+	// ── Guided subsection state ──
+	const isGuidedSection = $derived(!!GUIDED_SUBSECTIONS[activeSection]?.length);
+	const activeSubsections = $derived(GUIDED_SUBSECTIONS[activeSection] ?? []);
+	const activeSubsectionDef = $derived(
+		activeSubsection ? activeSubsections.find(s => s.key === activeSubsection) ?? null : null
+	);
+
+	// Per-subsection HTML cache (stored as form_data JSON on parent section)
+	function getSubsectionHtmls(sectionKey: string): Record<string, string> {
+		const sec = data.sections.find((s: { section_key: string; form_data: string | null }) => s.section_key === sectionKey);
+		if (sec?.form_data) {
+			try {
+				const fd = JSON.parse(sec.form_data);
+				return fd._subsection_htmls ?? {};
+			} catch { /* ignore */ }
+		}
+		return {};
+	}
+
+	function getSubsectionFormData(sectionKey: string, subsectionKey: string): Record<string, unknown> {
+		const sec = data.sections.find((s: { section_key: string; form_data: string | null }) => s.section_key === sectionKey);
+		if (sec?.form_data) {
+			try {
+				const fd = JSON.parse(sec.form_data);
+				return fd._subsection_form_data?.[subsectionKey] ?? {};
+			} catch { /* ignore */ }
+		}
+		return {};
+	}
+
+	// In-memory subsection state (survives subsection switches within a section)
+	let subsectionHtmlCache = $state<Record<string, Record<string, string>>>({});
+	let subsectionFormDataCache = $state<Record<string, Record<string, Record<string, unknown>>>>({});
+
+	// Initialize cache from server data when switching sections
+	$effect(() => {
+		if (activeSection && isGuidedSection && !subsectionHtmlCache[activeSection]) {
+			subsectionHtmlCache[activeSection] = getSubsectionHtmls(activeSection);
+			// Load form data for each subsection
+			const formDataMap: Record<string, Record<string, unknown>> = {};
+			for (const sub of activeSubsections) {
+				formDataMap[sub.key] = getSubsectionFormData(activeSection, sub.key);
+			}
+			subsectionFormDataCache[activeSection] = formDataMap;
+		}
+	});
+
+	function getSubHtml(subsectionKey: string): string {
+		return subsectionHtmlCache[activeSection]?.[subsectionKey] ?? '';
+	}
+
+	function getSubFormData(subsectionKey: string): Record<string, unknown> {
+		return subsectionFormDataCache[activeSection]?.[subsectionKey] ?? {};
+	}
+
+	async function saveSubsection(subsectionKey: string, html: string, formData?: Record<string, unknown>) {
+		// Update local cache
+		if (!subsectionHtmlCache[activeSection]) subsectionHtmlCache[activeSection] = {};
+		subsectionHtmlCache[activeSection][subsectionKey] = html;
+
+		if (formData) {
+			if (!subsectionFormDataCache[activeSection]) subsectionFormDataCache[activeSection] = {};
+			subsectionFormDataCache[activeSection][subsectionKey] = formData;
+		}
+
+		// Rebuild parent content_html by concatenating all subsection HTMLs in order
+		const subsections = GUIDED_SUBSECTIONS[activeSection] ?? [];
+		const allHtmls = subsectionHtmlCache[activeSection] ?? {};
+		const parentHtml = subsections
+			.map(s => allHtmls[s.key] ?? '')
+			.filter(h => h.trim().length > 0)
+			.join('\n\n');
+
+		// Build form_data to persist subsection state
+		const persistedFormData = JSON.stringify({
+			_subsection_htmls: subsectionHtmlCache[activeSection] ?? {},
+			_subsection_form_data: subsectionFormDataCache[activeSection] ?? {}
+		});
+
+		// Update content cache for parent section
+		contentCache[activeSection] = { json: '', html: parentHtml };
+		if (sectionStatuses[activeSection] !== 'reviewed') {
+			sectionStatuses[activeSection] = 'in_progress';
+		}
+
+		// Persist to server
+		await fetch(`/reports/${data.report.id}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				action: 'save_section',
+				section_key: activeSection,
+				content_json: '',
+				content_html: parentHtml,
+				status: 'in_progress',
+				form_data: persistedFormData
+			})
+		});
+	}
+
+	async function regenerateSubsection(subsectionKey: string) {
+		const res = await fetch(`/reports/${data.report.id}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				action: 'regenerate_subsection',
+				section_key: activeSection,
+				subsection_key: subsectionKey
+			})
+		});
+		if (res.ok) {
+			const result = await res.json();
+			// Update subsection html cache
+			if (!subsectionHtmlCache[activeSection]) subsectionHtmlCache[activeSection] = {};
+			subsectionHtmlCache[activeSection][subsectionKey] = result.html;
+
+			// Rebuild parent content_html
+			await saveSubsection(subsectionKey, result.html);
+		}
+	}
+
+	function handleSelectSubsection(sectionKey: string, subsectionKey: string) {
+		activeSection = sectionKey;
+		activeSubsection = subsectionKey;
+	}
+
+	function handleSelectSection(key: string) {
+		activeSection = key;
+		// If it's a guided section, auto-select first subsection
+		const subs = GUIDED_SUBSECTIONS[key];
+		if (subs?.length) {
+			activeSubsection = subs[0].key;
+		} else {
+			activeSubsection = null;
+		}
+	}
 
 	// ── Auto-source progress polling ──
 	interface AutoSourceStatus {
@@ -386,8 +532,10 @@
 		<SectionNav
 			sections={flatSections}
 			{activeSection}
+			{activeSubsection}
 			{sectionStatuses}
-			onselect={(key) => activeSection = key}
+			onselect={handleSelectSection}
+			onselectsubsection={handleSelectSubsection}
 		/>
 		{#if autoSourceStatus?.state === 'running'}
 			<div class="auto-source-indicator">
@@ -417,6 +565,9 @@
 	<div class="editor-main">
 		<div class="section-header">
 			<h1>{SECTION_MAP[activeSection]?.label ?? activeSection}</h1>
+			{#if activeSubsectionDef}
+				<span class="subsection-breadcrumb">/ {activeSubsectionDef.label}</span>
+			{/if}
 			{#if generating}
 				<span class="generating-badge">AI generating...</span>
 			{/if}
@@ -440,7 +591,41 @@
 			</div>
 		{/if}
 
-		{#if activeSection === 'summary_conclusions'}
+		{#if isGuidedSection && activeSubsectionDef}
+			<!-- ── Guided subsection mode ── -->
+			{#key `${activeSection}.${activeSubsection}`}
+				<GuidedSubsection
+					subsection={activeSubsectionDef}
+					parentSectionKey={activeSection}
+					reportId={data.report.id}
+					html={getSubHtml(activeSubsection!)}
+					status={sectionStatuses[activeSection] ?? 'empty'}
+					images={activeSectionImages}
+					formData={getSubFormData(activeSubsection!)}
+					marketArea={data.propertyContext?.county ?? 'utah_county'}
+					onSave={(html, fd) => saveSubsection(activeSubsection!, html, fd)}
+					onRegenerate={() => regenerateSubsection(activeSubsection!)}
+					onRequestGhostText={(text) => generateGhostText(activeSection, text)}
+				/>
+			{/key}
+		{:else if isGuidedSection && !activeSubsectionDef}
+			<!-- Guided section with no subsection selected — show overview -->
+			<div class="guided-overview">
+				<p class="guided-overview-text">
+					This section has {activeSubsections.length} subsections. Select one from the sidebar to begin editing.
+				</p>
+				<div class="guided-overview-grid">
+					{#each activeSubsections as sub}
+						<button class="overview-item" onclick={() => { activeSubsection = sub.key; }}>
+							<span class="overview-label">{sub.label}</span>
+							<span class="overview-tier" class:auto={sub.tier === 'auto'} class:freeform={sub.tier === 'freeform'} class:form={sub.tier === 'form'} class:image={sub.tier === 'image'}>
+								{sub.tier.toUpperCase()}
+							</span>
+						</button>
+					{/each}
+				</div>
+			</div>
+		{:else if activeSection === 'summary_conclusions'}
 			<SalientFactsTable
 				reportId={data.report.id}
 				sectionKey="summary_conclusions"
@@ -485,7 +670,7 @@
 					</button>
 				</div>
 			{/if}
-			<!-- PROSE, GUIDED (rendered as prose for now), or overridden AUTO -->
+			<!-- PROSE or overridden AUTO -->
 			<Editor
 				sectionKey={activeSection}
 				initialContent={getInitialHtml(activeSection)}
@@ -495,7 +680,7 @@
 			/>
 		{/if}
 
-		{#if activeTier !== 'images' && activeTier !== 'upload' && activeSectionImages.length > 0}
+		{#if !isGuidedSection && activeTier !== 'images' && activeTier !== 'upload' && activeSectionImages.length > 0}
 			<div class="section-images-below">
 				<ImageUploader
 					reportId={data.report.id}
@@ -772,4 +957,65 @@
 		border-radius: 50%;
 		animation: pulse 1.5s infinite;
 	}
+
+	/* ── Guided section styles ── */
+	.subsection-breadcrumb {
+		font-size: 1rem;
+		color: #888;
+		font-weight: 400;
+	}
+
+	.guided-overview {
+		padding: 1rem 0;
+	}
+
+	.guided-overview-text {
+		margin: 0 0 1rem;
+		color: #666;
+		font-size: 0.9rem;
+	}
+
+	.guided-overview-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.5rem;
+	}
+
+	.overview-item {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 0.6rem 0.8rem;
+		background: #f8f9fa;
+		border: 1px solid #e5e5e5;
+		border-radius: 6px;
+		cursor: pointer;
+		text-align: left;
+		font-size: 0.82rem;
+		color: #333;
+		transition: all 0.15s ease;
+	}
+
+	.overview-item:hover {
+		background: #e8e8f0;
+		border-color: #ccc;
+	}
+
+	.overview-label {
+		flex: 1;
+	}
+
+	.overview-tier {
+		font-size: 0.55rem;
+		font-weight: 700;
+		padding: 0.1rem 0.35rem;
+		border-radius: 3px;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	.overview-tier.auto { background: #d4edda; color: #155724; }
+	.overview-tier.freeform { background: #cce5ff; color: #004085; }
+	.overview-tier.form { background: #fff3cd; color: #856404; }
+	.overview-tier.image { background: #e8d5f5; color: #6f42c1; }
 </style>

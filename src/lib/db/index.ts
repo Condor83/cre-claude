@@ -275,6 +275,52 @@ function migrateSectionImagesSource(db: Database.Database): void {
 	console.log('[images-migration] Complete');
 }
 
+// ── Schema migration: add UNIQUE constraint to market_data ──
+
+function migrateMarketDataUnique(db: Database.Database): void {
+	// Check if the UNIQUE index already exists
+	const indexes = db.prepare("PRAGMA index_list(market_data)").all() as Array<{ name: string; unique: number }>;
+	const hasUniqueIndex = indexes.some(i => i.unique === 1 && i.name.includes('market_area'));
+	if (hasUniqueIndex) return;
+
+	console.log('[market-data-migration] Adding UNIQUE(market_area, data_type) to market_data...');
+	db.pragma('foreign_keys = OFF');
+
+	const migrate = db.transaction(() => {
+		// Deduplicate: keep only the latest row for each (market_area, data_type) pair
+		db.exec(`
+			DELETE FROM market_data WHERE id NOT IN (
+				SELECT MAX(id) FROM market_data GROUP BY market_area, data_type
+			)
+		`);
+		// Recreate table with UNIQUE constraint
+		db.exec(`
+			CREATE TABLE market_data_new (
+				id INTEGER PRIMARY KEY,
+				market_area TEXT NOT NULL,
+				data_type TEXT NOT NULL,
+				data_json TEXT NOT NULL,
+				year INTEGER,
+				source TEXT,
+				updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(market_area, data_type)
+			)
+		`);
+		db.exec(`INSERT INTO market_data_new SELECT * FROM market_data`);
+		db.exec(`DROP TABLE market_data`);
+		db.exec(`ALTER TABLE market_data_new RENAME TO market_data`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_market_data_area ON market_data(market_area)`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_market_data_type ON market_data(data_type)`);
+	});
+
+	try {
+		migrate();
+		console.log('[market-data-migration] Complete');
+	} finally {
+		db.pragma('foreign_keys = ON');
+	}
+}
+
 export function getDb(): Database.Database {
 	if (_db) return _db;
 
@@ -314,6 +360,9 @@ export function getDb(): Database.Database {
 
 	// Migrate section_images (source column)
 	migrateSectionImagesSource(_db);
+
+	// Migrate market_data (UNIQUE constraint)
+	migrateMarketDataUnique(_db);
 
 	// Re-run schema to ensure all indexes exist (idempotent after migration)
 	_db.exec(schema);
@@ -1072,6 +1121,11 @@ export function upsertMarketData(data: {
 	return db.prepare(`
 		INSERT INTO market_data (market_area, data_type, data_json, year, source, updated_at)
 		VALUES (@market_area, @data_type, @data_json, @year, @source, CURRENT_TIMESTAMP)
+		ON CONFLICT(market_area, data_type) DO UPDATE SET
+			data_json = excluded.data_json,
+			year = excluded.year,
+			source = excluded.source,
+			updated_at = CURRENT_TIMESTAMP
 	`).run({
 		market_area: data.market_area,
 		data_type: data.data_type,
@@ -1079,6 +1133,22 @@ export function upsertMarketData(data: {
 		year: data.year ?? null,
 		source: data.source ?? null
 	});
+}
+
+export function getMarketDataFreshness(marketArea: string, dataType: string): { fresh: boolean; ageInDays: number; data: unknown | null } {
+	const db = getDb();
+	const row = db.prepare(
+		'SELECT data_json, updated_at FROM market_data WHERE market_area = ? AND data_type = ? ORDER BY updated_at DESC LIMIT 1'
+	).get(marketArea, dataType) as { data_json: string; updated_at: string } | undefined;
+
+	if (!row) return { fresh: false, ageInDays: Infinity, data: null };
+
+	const updatedAt = new Date(row.updated_at);
+	const ageInDays = (Date.now() - updatedAt.getTime()) / (1000 * 60 * 60 * 24);
+	let data: unknown = null;
+	try { data = JSON.parse(row.data_json); } catch { /* ignore */ }
+
+	return { fresh: ageInDays < 30, ageInDays, data };
 }
 
 // ── Section image helpers ──

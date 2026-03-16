@@ -199,12 +199,13 @@ export async function autoSourceSubjectImages(reportId: number): Promise<void> {
 			: { boundary: null, aerial: null };
 
 		// Simple image configs for single-buffer results
+		// Use dotted keys for images that belong in guided subsections
 		const simpleConfigs = [
-			{ index: 0, section: 'neighborhood', caption: 'Neighborhood Map', sort: 0 },
-			{ index: 1, section: 'neighborhood', caption: 'Neighborhood Aerial', sort: 1 },
+			{ index: 0, section: 'neighborhood.nbhd_map', caption: 'Neighborhood Map', sort: 0 },
+			{ index: 1, section: 'neighborhood.nbhd_aerial', caption: 'Neighborhood Aerial', sort: 0 },
 			{ index: 3, section: 'photographs', caption: 'Subject Property Photo', sort: 0 },
 			{ index: 4, section: 'flood_map', caption: 'FEMA Flood Map', sort: 0 },
-			{ index: 5, section: 'zoning', caption: 'Zoning Map', sort: 0 }
+			{ index: 5, section: 'zoning.zoning_map', caption: 'Zoning Map', sort: 0 }
 		];
 
 		// Collect all sections that have at least one image to save
@@ -213,7 +214,7 @@ export async function autoSourceSubjectImages(reportId: number): Promise<void> {
 			const r = results[c.index];
 			if (r.status === 'fulfilled' && r.value) sectionsToSave.add(c.section);
 		}
-		if (parcelImages.boundary || parcelImages.aerial) sectionsToSave.add('plat_map');
+		if (parcelImages.boundary || parcelImages.aerial) sectionsToSave.add('site_description.site_plat_map');
 
 		// Clear auto images once per section
 		for (const section of sectionsToSave) {
@@ -235,17 +236,17 @@ export async function autoSourceSubjectImages(reportId: number): Promise<void> {
 			}
 		}
 
-		// Save parcel map images (boundary + aerial)
+		// Save parcel map images (boundary + aerial) into site_description subsection
 		if (parcelImages.boundary) {
 			const filePath = saveImageBuffer(reportId, parcelImages.boundary);
-			addSectionImage(reportId, 'plat_map', filePath, 'Parcel Map', 0, 'auto');
+			addSectionImage(reportId, 'site_description.site_plat_map', filePath, 'Parcel Map', 0, 'auto');
 			status.completed++;
 		} else {
 			status.errors.push('Parcel Map: not available');
 		}
 		if (parcelImages.aerial) {
 			const filePath = saveImageBuffer(reportId, parcelImages.aerial);
-			addSectionImage(reportId, 'plat_map', filePath, 'Plat Map (Aerial)', 1, 'auto');
+			addSectionImage(reportId, 'site_description.site_plat_map', filePath, 'Plat Map (Aerial)', 1, 'auto');
 			status.completed++;
 		} else {
 			status.errors.push('Plat Map (Aerial): not available');

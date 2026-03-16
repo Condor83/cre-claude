@@ -177,7 +177,8 @@ CREATE TABLE IF NOT EXISTS market_data (
   data_json TEXT NOT NULL,
   year INTEGER,
   source TEXT,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(market_area, data_type)
 );
 CREATE INDEX IF NOT EXISTS idx_market_data_area ON market_data(market_area);
 CREATE INDEX IF NOT EXISTS idx_market_data_type ON market_data(data_type);

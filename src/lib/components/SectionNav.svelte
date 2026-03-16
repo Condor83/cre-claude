@@ -1,6 +1,7 @@
 <script lang="ts">
-	import type { SectionGroup, SectionStatus } from '$lib/config/sections';
-	import { GROUP_LABELS, GROUP_ORDER } from '$lib/config/sections';
+	import { untrack } from 'svelte';
+	import type { SectionGroup, SectionStatus, SubsectionDef } from '$lib/config/sections';
+	import { GROUP_LABELS, GROUP_ORDER, GUIDED_SUBSECTIONS } from '$lib/config/sections';
 
 	interface Section {
 		key: string;
@@ -12,11 +13,56 @@
 	interface Props {
 		sections: Section[];
 		activeSection: string;
+		activeSubsection: string | null;
 		sectionStatuses: Record<string, SectionStatus>;
 		onselect: (key: string) => void;
+		onselectsubsection: (sectionKey: string, subsectionKey: string) => void;
 	}
 
-	let { sections, activeSection, sectionStatuses, onselect }: Props = $props();
+	let { sections, activeSection, activeSubsection = null, sectionStatuses, onselect, onselectsubsection }: Props = $props();
+
+	// Track which guided sections have expanded accordions
+	let expandedSections = $state<Set<string>>(new Set());
+
+	function toggleAccordion(sectionKey: string) {
+		const next = new Set(expandedSections);
+		if (next.has(sectionKey)) {
+			next.delete(sectionKey);
+		} else {
+			next.add(sectionKey);
+		}
+		expandedSections = next;
+	}
+
+	// Auto-expand when a guided section is active
+	$effect(() => {
+		if (activeSection && GUIDED_SUBSECTIONS[activeSection]) {
+			const current = untrack(() => expandedSections);
+			if (!current.has(activeSection)) {
+				const next = new Set(current);
+				next.add(activeSection);
+				expandedSections = next;
+			}
+		}
+	});
+
+	function getSubsections(sectionKey: string): SubsectionDef[] {
+		return GUIDED_SUBSECTIONS[sectionKey] ?? [];
+	}
+
+	function hasSubsections(sectionKey: string): boolean {
+		return (GUIDED_SUBSECTIONS[sectionKey]?.length ?? 0) > 0;
+	}
+
+	function getSubsectionTierBadge(tier: string): { text: string; bg: string; fg: string } {
+		switch (tier) {
+			case 'auto': return { text: 'A', bg: '#d4edda', fg: '#155724' };
+			case 'freeform': return { text: 'E', bg: '#cce5ff', fg: '#004085' };
+			case 'form': return { text: 'F', bg: '#fff3cd', fg: '#856404' };
+			case 'image': return { text: 'I', bg: '#e8d5f5', fg: '#6f42c1' };
+			default: return { text: '', bg: 'transparent', fg: '#666' };
+		}
+	}
 
 	let completedCount = $derived(
 		sections.filter((s) => (sectionStatuses[s.key] ?? 'empty') !== 'empty').length
@@ -93,10 +139,13 @@
 				{#each group.sections as section (section.key)}
 					{@const statusInfo = getStatusColor(section.key)}
 					{@const tierBadge = getTierBadge(section.tier)}
+					{@const isGuided = hasSubsections(section.key)}
+					{@const isExpanded = expandedSections.has(section.key)}
 					<button
 						class="nav-item"
 						class:active={activeSection === section.key}
-						onclick={() => onselect(section.key)}
+						class:has-subsections={isGuided}
+						onclick={() => { onselect(section.key); if (isGuided) toggleAccordion(section.key); }}
 					>
 						<svg class="status-dot" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
 							<circle
@@ -109,6 +158,9 @@
 							/>
 						</svg>
 						<span class="nav-label">{section.label}</span>
+						{#if isGuided}
+							<span class="accordion-arrow" class:expanded={isExpanded}>▸</span>
+						{/if}
 						{#if tierBadge.text}
 							<span
 								class="tier-badge"
@@ -119,6 +171,29 @@
 							</span>
 						{/if}
 					</button>
+					{#if isGuided}
+						<div class="subsection-list" class:collapsed={!isExpanded}>
+							{#each getSubsections(section.key) as sub (sub.key)}
+								{@const subBadge = getSubsectionTierBadge(sub.tier)}
+								<button
+									class="nav-sub-item"
+									class:active={activeSection === section.key && activeSubsection === sub.key}
+									onclick={() => onselectsubsection(section.key, sub.key)}
+								>
+									<span class="sub-label">{sub.label}</span>
+									{#if subBadge.text}
+										<span
+											class="sub-tier-badge"
+											style:background={subBadge.bg}
+											style:color={subBadge.fg}
+										>
+											{subBadge.text}
+										</span>
+									{/if}
+								</button>
+							{/each}
+						</div>
+					{/if}
 				{/each}
 			</div>
 		{/each}
@@ -250,5 +325,76 @@
 		border-radius: 3px;
 		line-height: 1.4;
 		white-space: nowrap;
+	}
+
+	/* ── Accordion arrow ── */
+	.accordion-arrow {
+		flex-shrink: 0;
+		font-size: 0.65rem;
+		color: #999;
+		transition: transform 0.15s ease;
+		display: inline-block;
+	}
+
+	.accordion-arrow.expanded {
+		transform: rotate(90deg);
+	}
+
+	.has-subsections .nav-label {
+		font-weight: 500;
+	}
+
+	/* ── Subsection list ── */
+	.subsection-list.collapsed {
+		display: none;
+	}
+
+	.subsection-list {
+		padding-left: 1.2rem;
+		border-left: 2px solid #e8e8f0;
+		margin-left: 0.9rem;
+	}
+
+	.nav-sub-item {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		width: 100%;
+		padding: 0.15rem 0.5rem;
+		border: none;
+		background: none;
+		text-align: left;
+		cursor: pointer;
+		font-size: 0.7rem;
+		color: #777;
+		line-height: 1.3;
+	}
+
+	.nav-sub-item:hover {
+		background: #f5f5f5;
+		color: #555;
+	}
+
+	.nav-sub-item.active {
+		background: #e8e8f0;
+		color: #1a1a2e;
+		font-weight: 600;
+	}
+
+	.sub-label {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.sub-tier-badge {
+		flex-shrink: 0;
+		font-size: 0.5rem;
+		font-weight: 700;
+		padding: 0.05rem 0.2rem;
+		border-radius: 2px;
+		line-height: 1.3;
 	}
 </style>

@@ -1,4 +1,4 @@
-import { getPropertyContext, getAllAppraiserSettings, type PropertyContext } from '$lib/db/index.js';
+import { getPropertyContext, getAllAppraiserSettings, getMarketData, type PropertyContext } from '$lib/db/index.js';
 
 export interface AppraiserInfo {
 	name: string;
@@ -12,6 +12,14 @@ export interface AppraiserInfo {
 	cv_text: string;
 }
 
+export interface MarketDataEntry {
+	data_type: string;
+	data_json: string;
+	year: number | null;
+	source: string | null;
+	updated_at: string;
+}
+
 export interface TemplateContext extends PropertyContext {
 	appraiser: AppraiserInfo;
 	approaches_list: string[];
@@ -20,6 +28,7 @@ export interface TemplateContext extends PropertyContext {
 	county_display: string;
 	report_date_formatted: string;
 	effective_date_formatted: string;
+	market_data: Record<string, unknown>;
 }
 
 const COUNTY_DISPLAY: Record<string, string> = {
@@ -85,6 +94,18 @@ export function buildTemplateContext(reportId: number): TemplateContext | null {
 		? (COUNTY_DISPLAY[propCtx.county] ?? propCtx.county)
 		: 'N/A';
 
+	// Load cached market data for this property's market area
+	const marketArea = propCtx.county ?? 'utah_county';
+	const rawMarketData = getMarketData(marketArea) as MarketDataEntry[];
+	const market_data: Record<string, unknown> = {};
+	for (const row of rawMarketData) {
+		try {
+			market_data[row.data_type] = JSON.parse(row.data_json);
+		} catch {
+			market_data[row.data_type] = null;
+		}
+	}
+
 	return {
 		...propCtx,
 		appraiser,
@@ -93,6 +114,7 @@ export function buildTemplateContext(reportId: number): TemplateContext | null {
 		full_address: fullAddress,
 		county_display: countyDisplay,
 		report_date_formatted: formatDate(propCtx.report_date),
-		effective_date_formatted: formatDate(propCtx.effective_date)
+		effective_date_formatted: formatDate(propCtx.effective_date),
+		market_data
 	};
 }

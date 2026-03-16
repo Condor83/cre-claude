@@ -58,7 +58,6 @@ export const ALL_SECTIONS: SectionDef[] = [
 	// ── Group 3: Factual Descriptions ──
 	{ key: 'neighborhood', label: 'Neighborhood Description', group: 'factual_descriptions', tier: 'guided', approaches: ['always'] },
 	{ key: 'site_description', label: 'Site Description', group: 'factual_descriptions', tier: 'guided', approaches: ['always'] },
-	{ key: 'plat_map', label: 'Plat Map', group: 'factual_descriptions', tier: 'upload', approaches: ['always'] },
 	{ key: 'zoning', label: 'Zoning', group: 'factual_descriptions', tier: 'guided', approaches: ['always'] },
 	{ key: 'improvement_description', label: 'Improvement Description', group: 'factual_descriptions', tier: 'guided', approaches: ['always'] },
 	{ key: 'assessment_taxes', label: 'Assessment & Taxes', group: 'factual_descriptions', tier: 'auto', approaches: ['always'] },
@@ -89,46 +88,97 @@ export const ALL_SECTIONS: SectionDef[] = [
 
 // ── GUIDED section subsection configs ──
 // Each GUIDED section has an ordered list of subsections that define its structure
+// 4 tiers only: auto (template + variable insertion), freeform (Brad edits), form (structured fields), image
 
-export type SubsectionType = 'auto' | 'freeform' | 'market_table' | 'image' | 'form';
+export type SubsectionTier = 'auto' | 'freeform' | 'form' | 'image';
 
 export interface SubsectionDef {
 	key: string;
 	label: string;
-	type: SubsectionType;
+	tier: SubsectionTier;
 	placeholder?: string;
+	dataSource?: string; // e.g. 'utah_dws', 'bebr', 'udot' — triggers refresh UI on auto subsections
+	requiresOnsite?: boolean; // true if Brad must inspect in person
 }
+
+// Backward compat alias
+export type SubsectionType = SubsectionTier;
 
 export const GUIDED_SUBSECTIONS: Record<string, SubsectionDef[]> = {
 	transmittal: [
-		{ key: 'header', label: 'Letter Header', type: 'auto' },
-		{ key: 'property_summary', label: 'Property Summary', type: 'freeform', placeholder: 'Describe the property and assignment...' },
-		{ key: 'special_conditions', label: 'Special Conditions', type: 'freeform', placeholder: 'Note any special conditions or assumptions...' },
-		{ key: 'closing', label: 'Closing', type: 'auto' }
+		{ key: 'header', label: 'Letter Header', tier: 'auto' },
+		{ key: 'property_summary', label: 'Property Summary', tier: 'freeform', placeholder: 'Describe the property and assignment...' },
+		{ key: 'special_conditions', label: 'Special Conditions', tier: 'freeform', placeholder: 'Note any special conditions or assumptions...' },
+		{ key: 'closing', label: 'Closing', tier: 'auto' }
 	],
 	neighborhood: [
-		{ key: 'intro', label: 'Neighborhood Overview', type: 'auto' },
-		{ key: 'population_table', label: 'Population Data', type: 'market_table' },
-		{ key: 'employment_table', label: 'Employment Data', type: 'market_table' },
-		{ key: 'market_narrative', label: 'Market Conditions', type: 'freeform', placeholder: 'Describe current market conditions and trends...' },
-		{ key: 'location_narrative', label: 'Location Description', type: 'freeform', placeholder: 'Describe the immediate neighborhood...' }
+		// Intro & Location (pp. 5-6)
+		{ key: 'nbhd_intro', label: 'Intro / Definition', tier: 'auto' },
+		{ key: 'nbhd_geographic', label: 'Geographic Location', tier: 'auto' },
+		{ key: 'nbhd_map', label: 'Neighborhood Map', tier: 'image' },
+		{ key: 'nbhd_aerial', label: 'Aerial View', tier: 'image' },
+		// Population & Employment (pp. 7-9)
+		{ key: 'nbhd_population_table', label: 'Population Table', tier: 'auto', dataSource: 'utah_dws' },
+		{ key: 'nbhd_population_narrative', label: 'Population Narrative', tier: 'auto', dataSource: 'utah_dws' },
+		{ key: 'nbhd_employment_table', label: 'Employment Table', tier: 'auto', dataSource: 'utah_dws' },
+		{ key: 'nbhd_employment_narrative', label: 'Employment Narrative', tier: 'auto', dataSource: 'utah_dws' },
+		// Jurisdiction & Land Use (pp. 9-10)
+		{ key: 'nbhd_jurisdiction', label: 'Jurisdiction & Proximity', tier: 'auto' },
+		{ key: 'nbhd_boundaries', label: 'Boundaries & Land Use', tier: 'freeform', requiresOnsite: true, placeholder: 'Describe neighborhood boundaries and predominant land uses...' },
+		{ key: 'nbhd_built_up', label: 'Percent Built-Up', tier: 'freeform', requiresOnsite: true, placeholder: 'Estimated percent built-up and growth rate...' },
+		{ key: 'nbhd_immediate', label: 'Immediate Neighborhood', tier: 'freeform', requiresOnsite: true, placeholder: 'Describe immediately surrounding properties and uses...' },
+		// Access & Transportation (p. 11)
+		{ key: 'nbhd_access', label: 'Access & Transportation', tier: 'auto', dataSource: 'udot' },
+		// Development Trends (pp. 11-14)
+		{ key: 'nbhd_dev_sfr_table', label: 'Dev Trends — SFR Table', tier: 'auto', dataSource: 'bebr' },
+		{ key: 'nbhd_dev_sfr_narrative', label: 'Dev Trends — SFR Narrative', tier: 'auto', dataSource: 'bebr' },
+		{ key: 'nbhd_dev_multifamily', label: 'Dev Trends — Multi-Family', tier: 'freeform', placeholder: 'Describe multi-family development activity...' },
+		{ key: 'nbhd_dev_commercial_table', label: 'Dev Trends — Commercial Table', tier: 'auto', dataSource: 'bebr' },
+		// Vacancy (pp. 14-15)
+		{ key: 'nbhd_vacancy_industrial', label: 'Vacancy — Industrial', tier: 'auto', dataSource: 'commerce_crg' },
+		{ key: 'nbhd_vacancy_office_retail', label: 'Vacancy — Office & Retail', tier: 'auto', dataSource: 'commerce_crg' },
+		// Neighborhood Character (pp. 15-17)
+		{ key: 'nbhd_influences', label: 'Positive / Negative Influences', tier: 'freeform', requiresOnsite: true, placeholder: 'List positive and negative influences on the neighborhood...' },
+		{ key: 'nbhd_community_facilities', label: 'Community Facilities', tier: 'auto' },
+		{ key: 'nbhd_utilities', label: 'Public Utilities', tier: 'auto' },
+		{ key: 'nbhd_nuisances', label: 'Nuisances & Hazards', tier: 'freeform', requiresOnsite: true, placeholder: 'Describe any nuisances, hazards, or adverse conditions...' },
+		{ key: 'nbhd_conformity', label: 'Conformity of Development', tier: 'auto' },
+		{ key: 'nbhd_life_stage', label: 'Neighborhood Life Stage', tier: 'form' },
+		{ key: 'nbhd_conclusion', label: 'Neighborhood Conclusion', tier: 'freeform', placeholder: 'Summarize neighborhood influences on value and marketability...' }
 	],
 	site_description: [
-		{ key: 'dimensions', label: 'Site Dimensions', type: 'auto' },
-		{ key: 'topography', label: 'Topography & Access', type: 'freeform', placeholder: 'Describe topography, access, and utilities...' },
-		{ key: 'plat_map', label: 'Plat Map', type: 'image' }
+		// Physical (pp. 18-19)
+		{ key: 'site_dimensions', label: 'Dimensions, Shape, Area', tier: 'auto' },
+		{ key: 'site_topography', label: 'Topography & Drainage', tier: 'auto' },
+		{ key: 'site_soil', label: 'Soil & Subsoil', tier: 'auto' },
+		// Maps (p. 19)
+		{ key: 'site_plat_map', label: 'Plat Map', tier: 'image' },
+		{ key: 'site_plan', label: 'Site Plan', tier: 'image' },
+		// Access & Infrastructure (pp. 19-20)
+		{ key: 'site_access', label: 'Access & Street Improvements', tier: 'auto', dataSource: 'udot' },
+		{ key: 'site_utilities', label: 'Utilities', tier: 'auto' },
+		// Observations (p. 20)
+		{ key: 'site_onsite', label: 'On-Site Improvements', tier: 'freeform', requiresOnsite: true, placeholder: 'Describe parking, landscaping, exterior improvements...' },
+		{ key: 'site_influences', label: 'Positive / Negative Influences', tier: 'freeform', placeholder: 'Describe site-specific positive and negative influences...' },
+		{ key: 'site_building_location', label: 'Building Improvement Location', tier: 'freeform', requiresOnsite: true, placeholder: 'Describe building placement and orientation on site...' },
+		{ key: 'site_rail', label: 'Rail Service', tier: 'auto' },
+		{ key: 'site_easements', label: 'Easements', tier: 'auto' }
 	],
 	zoning: [
-		{ key: 'classification', label: 'Zoning Classification', type: 'auto' },
-		{ key: 'development_standards', label: 'Development Standards', type: 'form' },
-		{ key: 'zoning_map', label: 'Zoning Map', type: 'image' }
+		{ key: 'zoning_classification', label: 'Classification', tier: 'auto' },
+		{ key: 'zoning_standards', label: 'Development Standards', tier: 'form' },
+		{ key: 'zoning_conforming', label: 'Conforming Use', tier: 'auto' },
+		{ key: 'zoning_map', label: 'Zoning Map', tier: 'image' }
 	],
 	improvement_description: [
-		{ key: 'summary', label: 'Building Summary', type: 'auto' },
-		{ key: 'unit_breakdown', label: 'Unit/Suite Breakdown', type: 'form' },
-		{ key: 'detail', label: 'Detailed Description', type: 'freeform', placeholder: 'Describe construction details, finishes, mechanicals...' },
-		{ key: 'floor_plan', label: 'Floor Plans', type: 'image' }
-	],
+		{ key: 'improvement_general', label: 'General Description', tier: 'auto' },
+		{ key: 'improvement_units', label: 'Unit Breakdown Table', tier: 'form', requiresOnsite: true },
+		{ key: 'improvement_retail_detail', label: 'Retail / Office Area Detail', tier: 'freeform', requiresOnsite: true, placeholder: 'Describe retail/office areas, finishes, and layout...' },
+		{ key: 'improvement_warehouse_detail', label: 'Warehouse / Shop Area Detail', tier: 'freeform', requiresOnsite: true, placeholder: 'Describe warehouse/shop areas, clear heights, loading...' },
+		{ key: 'improvement_quality', label: 'Quality / Condition / Effective Age', tier: 'auto' },
+		{ key: 'improvement_ada', label: 'ADA Compliance', tier: 'auto' },
+		{ key: 'improvement_floor_plans', label: 'Floor Plans / Elevations', tier: 'image' }
+	]
 };
 
 // ── Derived lookups (computed once at import time) ──
