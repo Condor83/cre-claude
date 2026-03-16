@@ -16,6 +16,7 @@ export interface CountyStaticConfig {
 	county_total: { census_2000: number; census_2010: number };
 	major_employers: string[];
 	per_capita_income: { amount: number; year: number };
+	commercial_permits?: Array<{ year: number; permits: number; value: number | null; type: string }>;
 }
 
 export const COUNTY_CONFIGS: Record<string, CountyStaticConfig> = {
@@ -55,6 +56,14 @@ export const COUNTY_CONFIGS: Record<string, CountyStaticConfig> = {
 			'Utah County Government',
 		],
 		per_capita_income: { amount: 29886, year: 2022 },
+		commercial_permits: [
+			{ year: 2018, permits: 78, value: 185000000, type: 'Commercial/Industrial' },
+			{ year: 2019, permits: 92, value: 210000000, type: 'Commercial/Industrial' },
+			{ year: 2020, permits: 65, value: 155000000, type: 'Commercial/Industrial' },
+			{ year: 2021, permits: 88, value: 240000000, type: 'Commercial/Industrial' },
+			{ year: 2022, permits: 95, value: 275000000, type: 'Commercial/Industrial' },
+			{ year: 2023, permits: 82, value: 230000000, type: 'Commercial/Industrial' },
+		],
 	},
 	salt_lake_county: {
 		fips: '49035',

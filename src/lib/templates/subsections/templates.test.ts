@@ -346,26 +346,139 @@ describe('DWS templates (no data — fallback)', () => {
 	});
 });
 
-describe('data placeholder templates (remaining 7)', () => {
-	const ctx = mockCtx();
-	const placeholderKeys = [
-		'nbhd_access', 'nbhd_dev_sfr_table', 'nbhd_dev_sfr_narrative',
-		'nbhd_dev_commercial_table', 'nbhd_vacancy_industrial',
-		'nbhd_vacancy_office_retail', 'site_access'
-	];
+describe('UDOT access templates (with data)', () => {
+	const accessData = {
+		subject_street: { name: '800 S', routeId: '0178', aadt: 13088, forecastAadt: null, distanceMiles: 0.2, classification: 'state_route' as const },
+		nearby_roads: [
+			{ name: 'MAIN ST', routeId: '0006', aadt: 18905, forecastAadt: null, distanceMiles: 0.25, classification: 'us_highway' as const },
+			{ name: '100 W', routeId: '0198', aadt: 15642, forecastAadt: null, distanceMiles: 0.07, classification: 'state_route' as const },
+		],
+		nearest_highway: { name: 'I-15 NB FWY', routeId: '0015', distanceMiles: 1.9, aadt: 85000 },
+		address_street: '1602 W 800 S',
+		fetched_at: '2025-01-01T00:00:00Z',
+		source: 'Utah Department of Transportation',
+	};
+	const ctx = mockCtx({ market_data: { udot_access: accessData } });
 
-	it('all 7 remaining placeholder templates are registered', () => {
-		for (const key of placeholderKeys) {
-			expect(SUBSECTION_TEMPLATES[key], `Missing placeholder: ${key}`).toBeDefined();
-		}
+	it('nbhd_access renders highway and road info', () => {
+		const html = renderSubsection('nbhd_access', ctx)!;
+		expect(html).toContain('I-15');
+		expect(html).toContain('1.9');
+		expect(html).toContain('800 S');
+		expect(html).toContain('13,088');
+		expect(html).toContain('Source:');
 	});
 
-	it('all remaining placeholders render awaiting-data messages', () => {
-		for (const key of placeholderKeys) {
-			const html = renderSubsection(key, ctx)!;
-			expect(html).toContain('not yet loaded');
-			expect(html).toContain('data-placeholder');
-		}
+	it('site_access renders subject street details', () => {
+		const html = renderSubsection('site_access', ctx)!;
+		expect(html).toContain('800 S');
+		expect(html).toContain('state route');
+		expect(html).toContain('13,088');
+		expect(html).toContain('onsite inspection');
+	});
+});
+
+describe('UDOT templates (no data — fallback)', () => {
+	const ctx = mockCtx({ market_data: {} });
+
+	it('nbhd_access shows placeholder when no data', () => {
+		const html = renderSubsection('nbhd_access', ctx)!;
+		expect(html).toContain('not yet loaded');
+	});
+
+	it('site_access shows placeholder when no data', () => {
+		const html = renderSubsection('site_access', ctx)!;
+		expect(html).toContain('not yet loaded');
+	});
+});
+
+describe('BEBR construction templates (with data)', () => {
+	const constData = {
+		sfr_permits: [
+			{ year: 2021, permits: 7450, value: 2229000000 },
+			{ year: 2022, permits: 5080, value: 1694000000 },
+			{ year: 2023, permits: 4575, value: 1466000000 },
+		],
+		multifamily_permits: [
+			{ year: 2021, units: 3590, value: null },
+			{ year: 2022, units: 3085, value: null },
+			{ year: 2023, units: 1461, value: null },
+		],
+		commercial: [
+			{ year: 2022, permits: 95, value: 275000000, type: 'Commercial/Industrial' },
+			{ year: 2023, permits: 82, value: 230000000, type: 'Commercial/Industrial' },
+		],
+		county: 'Utah',
+		source: 'U.S. Census Bureau, Building Permits Survey; Kem C. Gardner Policy Institute',
+		fetched_at: '2025-01-01T00:00:00Z',
+	};
+	const ctx = mockCtx({ market_data: { bebr_construction: constData } });
+
+	it('nbhd_dev_sfr_table renders permit rows', () => {
+		const html = renderSubsection('nbhd_dev_sfr_table', ctx)!;
+		expect(html).toContain('7,450');
+		expect(html).toContain('4,575');
+		expect(html).toContain('2023');
+		expect(html).toContain('Source:');
+	});
+
+	it('nbhd_dev_sfr_narrative describes trends', () => {
+		const html = renderSubsection('nbhd_dev_sfr_narrative', ctx)!;
+		expect(html).toContain('Utah County');
+		expect(html).toContain('4,575');
+		expect(html).toContain('2023');
+		expect(html).toContain('down');
+	});
+
+	it('nbhd_dev_commercial_table renders commercial rows', () => {
+		const html = renderSubsection('nbhd_dev_commercial_table', ctx)!;
+		expect(html).toContain('95');
+		expect(html).toContain('$275,000,000');
+		expect(html).toContain('Commercial/Industrial');
+	});
+});
+
+describe('BEBR templates (no data — fallback)', () => {
+	const ctx = mockCtx({ market_data: {} });
+
+	it('nbhd_dev_sfr_table shows placeholder', () => {
+		const html = renderSubsection('nbhd_dev_sfr_table', ctx)!;
+		expect(html).toContain('not yet loaded');
+	});
+
+	it('nbhd_dev_commercial_table shows placeholder', () => {
+		const html = renderSubsection('nbhd_dev_commercial_table', ctx)!;
+		expect(html).toContain('not yet loaded');
+	});
+});
+
+describe('Commerce CRG vacancy templates (with data)', () => {
+	const indData = {
+		entries: [{ quarter: 'Q4', year: 2024, vacancy_rate: 3.2, absorption_sf: 50000, avg_asking_rent: 0.65, rent_unit: 'SF NNN' }],
+		county: 'Utah', source: 'Commerce CRG', updated_at: '2025-01-01',
+	};
+	const ctx = mockCtx({ market_data: { crg_vacancy_industrial: indData } });
+
+	it('nbhd_vacancy_industrial renders table', () => {
+		const html = renderSubsection('nbhd_vacancy_industrial', ctx)!;
+		expect(html).toContain('3.2%');
+		expect(html).toContain('50,000');
+		expect(html).toContain('$1');
+		expect(html).toContain('Q4 2024');
+	});
+});
+
+describe('Commerce CRG vacancy templates (no data — prompts entry)', () => {
+	const ctx = mockCtx({ market_data: {} });
+
+	it('nbhd_vacancy_industrial shows entry prompt', () => {
+		const html = renderSubsection('nbhd_vacancy_industrial', ctx)!;
+		expect(html).toContain('No data entered');
+	});
+
+	it('nbhd_vacancy_office_retail shows entry prompt', () => {
+		const html = renderSubsection('nbhd_vacancy_office_retail', ctx)!;
+		expect(html).toContain('No data entered');
 	});
 });
 

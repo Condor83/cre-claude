@@ -94,15 +94,18 @@ export function buildTemplateContext(reportId: number): TemplateContext | null {
 		? (COUNTY_DISPLAY[propCtx.county] ?? propCtx.county)
 		: 'N/A';
 
-	// Load cached market data for this property's market area
+	// Load cached market data: county-level (DWS, BEBR) + property-level (UDOT)
 	const marketArea = propCtx.county ?? 'utah_county';
-	const rawMarketData = getMarketData(marketArea) as MarketDataEntry[];
 	const market_data: Record<string, unknown> = {};
-	for (const row of rawMarketData) {
-		try {
-			market_data[row.data_type] = JSON.parse(row.data_json);
-		} catch {
-			market_data[row.data_type] = null;
+
+	for (const area of [marketArea, `prop_${propCtx.property_id}`]) {
+		const rawMarketData = getMarketData(area) as MarketDataEntry[];
+		for (const row of rawMarketData) {
+			try {
+				market_data[row.data_type] = JSON.parse(row.data_json);
+			} catch {
+				market_data[row.data_type] = null;
+			}
 		}
 	}
 

@@ -24,18 +24,11 @@ export const DATA_PLACEHOLDER_TEMPLATES: Record<string, SubsectionRenderer> = {
 	// ── Neighborhood: Utah DWS — replaced by real templates in index.ts ──
 	// (nbhd_population_table, nbhd_population_narrative, nbhd_employment_table, nbhd_employment_narrative)
 
-	// ── Neighborhood: UDOT ──
-	nbhd_access: placeholder('Access & Transportation', 'udot'),
+	// ── Neighborhood: UDOT — replaced by real templates in index.ts ──
+	// (nbhd_access)
 
-	// ── Neighborhood: BEBR ──
-	nbhd_dev_sfr_table: placeholder('SFR Building Permits Table', 'bebr'),
-	nbhd_dev_sfr_narrative: placeholder('SFR Development Narrative', 'bebr'),
-	nbhd_dev_commercial_table: placeholder('Commercial Construction Table', 'bebr'),
+	// ── Neighborhood: BEBR — replaced by real templates in index.ts ──
+	// (nbhd_dev_sfr_table, nbhd_dev_sfr_narrative, nbhd_dev_commercial_table)
 
-	// ── Neighborhood: Commerce CRG ──
-	nbhd_vacancy_industrial: placeholder('Industrial Vacancy & Rental Rates', 'commerce_crg'),
-	nbhd_vacancy_office_retail: placeholder('Office & Retail Vacancy & Rental Rates', 'commerce_crg'),
-
-	// ── Site Description: UDOT ──
-	site_access: placeholder('Site Access & Street Improvements', 'udot')
+	// ── All placeholders replaced by real templates in index.ts ──
 };

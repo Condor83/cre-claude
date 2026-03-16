@@ -6,7 +6,8 @@ import { AUTO_TEMPLATES } from '$lib/templates/sections/index.js';
 import { getSectionsForApproaches, GUIDED_SUBSECTIONS, type SectionDef } from '$lib/config/sections.js';
 import { renderSubsection } from '$lib/templates/subsections/index.js';
 import { autoSourceSubjectImages } from '$lib/services/auto-source-images.js';
-import { refreshAllDwsData } from '$lib/services/market-data.js';
+import { refreshAllDwsData, refreshUdotData, refreshMarketData } from '$lib/services/market-data.js';
+import { geocodeAddress } from '$lib/services/geocode.js';
 
 const VALID_APPROACHES = ['sales_comparison', 'income_cap', 'cost'];
 
@@ -133,40 +134,56 @@ export const POST: RequestHandler = async ({ request }) => {
 			console.error('[auto-source] Subject images failed (non-fatal):', err)
 		);
 
-		// Fire-and-forget: refresh DWS data → render subsection tables on completion
-		refreshAllDwsData(property.county || 'utah_county')
-			.then(() => {
-				try {
-					const freshCtx = buildTemplateContext(reportId);
-					if (!freshCtx) return;
-					// Render auto subsections for all guided sections
-					const active = getSectionsForApproaches(approaches) as SectionDef[];
-					for (const section of active) {
-						const subs = GUIDED_SUBSECTIONS[section.key];
-						if (section.tier !== 'guided' || !subs?.length) continue;
-						const subHtmls: Record<string, string> = {};
-						for (const sub of subs) {
-							if (sub.tier === 'auto') {
-								const html = renderSubsection(sub.key, freshCtx);
-								if (html) subHtmls[sub.key] = html;
-							}
-						}
-						if (Object.keys(subHtmls).length > 0) {
-							const parentHtml = subs
-								.map(s => subHtmls[s.key] ?? '')
-								.filter(h => h.trim().length > 0)
-								.join('\n\n');
-							const formData = JSON.stringify({ _subsection_htmls: subHtmls, _subsection_form_data: {} });
-							saveSectionAutoContent(reportId, section.key, parentHtml);
-							saveSection(reportId, section.key, '', parentHtml, 'auto_generated', formData);
+		// Fire-and-forget: refresh all market data (DWS + UDOT) → render subsection tables
+		(async () => {
+			try {
+				// Geocode for UDOT (reuse cached coords if available)
+				let lat: number | undefined;
+				let lng: number | undefined;
+				if (property.address && property.city) {
+					const geo = await geocodeAddress(property.address, property.city, property.state || 'UT');
+					if (geo) { lat = geo.lat; lng = geo.lng; }
+				}
+
+				// Parallel: DWS (county-level) + BEBR (county-level) + UDOT (property-level)
+				const countyKey = property.county || 'utah_county';
+				await Promise.all([
+					refreshAllDwsData(countyKey),
+					refreshMarketData(countyKey, 'bebr_construction'),
+					lat && lng
+						? refreshUdotData(propertyId, lat, lng, property.address)
+						: Promise.resolve(false),
+				]);
+
+				// Re-render all auto subsections with fresh data
+				const freshCtx = buildTemplateContext(reportId);
+				if (!freshCtx) return;
+				const active = getSectionsForApproaches(approaches) as SectionDef[];
+				for (const section of active) {
+					const subs = GUIDED_SUBSECTIONS[section.key];
+					if (section.tier !== 'guided' || !subs?.length) continue;
+					const subHtmls: Record<string, string> = {};
+					for (const sub of subs) {
+						if (sub.tier === 'auto') {
+							const html = renderSubsection(sub.key, freshCtx);
+							if (html) subHtmls[sub.key] = html;
 						}
 					}
-					console.log('[market-data] Auto subsections rendered after DWS refresh');
-				} catch (err) {
-					console.error('[market-data] Subsection render after DWS failed (non-fatal):', err);
+					if (Object.keys(subHtmls).length > 0) {
+						const parentHtml = subs
+							.map(s => subHtmls[s.key] ?? '')
+							.filter(h => h.trim().length > 0)
+							.join('\n\n');
+						const formData = JSON.stringify({ _subsection_htmls: subHtmls, _subsection_form_data: {} });
+						saveSectionAutoContent(reportId, section.key, parentHtml);
+						saveSection(reportId, section.key, '', parentHtml, 'auto_generated', formData);
+					}
 				}
-			})
-			.catch(err => console.error('[market-data] DWS refresh failed (non-fatal):', err));
+				console.log('[market-data] Auto subsections rendered after data refresh');
+			} catch (err) {
+				console.error('[market-data] Data refresh failed (non-fatal):', err);
+			}
+		})();
 
 		return json({ id: reportId });
 	} catch (err) {

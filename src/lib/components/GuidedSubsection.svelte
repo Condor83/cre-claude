@@ -52,12 +52,19 @@
 	let dataAge = $state<number | null>(null);
 	let dataFreshnessLoaded = $state(false);
 
+	function resolveDataType(source: string, key: string): string {
+		if (source === 'utah_dws') return key.includes('population') ? 'dws_population' : 'dws_employment';
+		if (source === 'udot') return 'udot_access';
+		if (source === 'bebr') return 'bebr_construction';
+		return source;
+	}
+
 	$effect(() => {
 		if (subsection.dataSource && !dataFreshnessLoaded) {
-			const dataType = subsection.dataSource === 'utah_dws'
-				? (subsection.key.includes('population') ? 'dws_population' : 'dws_employment')
-				: subsection.dataSource;
-			fetch(`/api/market-data?market_area=${encodeURIComponent(marketArea)}&data_type=${encodeURIComponent(dataType)}`)
+			const dataType = resolveDataType(subsection.dataSource, subsection.key);
+			// UDOT data is per-property, DWS is per-county
+			const area = subsection.dataSource === 'udot' ? `prop_${reportId}` : marketArea;
+			fetch(`/api/market-data?market_area=${encodeURIComponent(area)}&data_type=${encodeURIComponent(dataType)}`)
 				.then(r => r.json())
 				.then(result => {
 					dataAge = result.ageInDays;

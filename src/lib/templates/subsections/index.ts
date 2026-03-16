@@ -12,7 +12,14 @@ import { render as nbhd_population_table } from './nbhd-population-table.js';
 import { render as nbhd_population_narrative } from './nbhd-population-narrative.js';
 import { render as nbhd_employment_table } from './nbhd-employment-table.js';
 import { render as nbhd_employment_narrative } from './nbhd-employment-narrative.js';
+import { render as nbhd_access } from './nbhd-access.js';
+import { render as nbhd_dev_sfr_table } from './nbhd-dev-sfr-table.js';
+import { render as nbhd_dev_sfr_narrative } from './nbhd-dev-sfr-narrative.js';
+import { render as nbhd_dev_commercial_table } from './nbhd-dev-commercial-table.js';
+import { render as nbhd_vacancy_industrial } from './nbhd-vacancy-industrial.js';
+import { render as nbhd_vacancy_office_retail } from './nbhd-vacancy-office-retail.js';
 import { render as site_dimensions } from './site-dimensions.js';
+import { render as site_access } from './site-access.js';
 import { render as site_topography } from './site-topography.js';
 import { render as zoning_classification } from './zoning-classification.js';
 import { render as improvement_general } from './improvement-general.js';
@@ -30,6 +37,15 @@ export const SUBSECTION_TEMPLATES: Record<string, (ctx: TemplateContext, options
 	nbhd_population_narrative,
 	nbhd_employment_table,
 	nbhd_employment_narrative,
+	// Access & Transportation (real data from UDOT)
+	nbhd_access,
+	// Development Trends (Census BPS + static commercial)
+	nbhd_dev_sfr_table,
+	nbhd_dev_sfr_narrative,
+	nbhd_dev_commercial_table,
+	// Vacancy (form-based from Commerce CRG reports)
+	nbhd_vacancy_industrial,
+	nbhd_vacancy_office_retail,
 	// Boilerplate neighborhood
 	nbhd_community_facilities: BOILERPLATE_TEMPLATES.nbhd_community_facilities,
 	nbhd_utilities: BOILERPLATE_TEMPLATES.nbhd_utilities,
@@ -38,6 +54,8 @@ export const SUBSECTION_TEMPLATES: Record<string, (ctx: TemplateContext, options
 	// ── Site Description ──
 	site_dimensions,
 	site_topography,
+	// Access (real data from UDOT)
+	site_access,
 	// Boilerplate site
 	site_soil: BOILERPLATE_TEMPLATES.site_soil,
 	site_utilities: BOILERPLATE_TEMPLATES.site_utilities,
